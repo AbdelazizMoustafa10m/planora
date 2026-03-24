@@ -370,3 +370,40 @@ def test_plan_resume_output_format_events_uses_events_callback(
     from planora.cli.callbacks import EventsOutputCallback  # noqa: PLC0415
 
     assert isinstance(captured.get("ui"), EventsOutputCallback)
+
+
+# ---------------------------------------------------------------------------
+# _detect_completed_rounds / _detect_missing_auditors_for_round
+# ---------------------------------------------------------------------------
+
+
+def test_detect_completed_rounds_requires_final_plan(tmp_path: "Path") -> None:
+    """A round with all audit files but no final-plan.md is NOT considered complete."""
+    from planora.cli.plan import _detect_completed_rounds  # noqa: PLC0415
+
+    workspace = tmp_path / ".plan-workspace"
+    workspace.mkdir()
+    # Create audit files for round 1 but no final-plan.md
+    (workspace / "audit-gemini.md").write_text("# Audit\n", encoding="utf-8")
+    (workspace / "audit-codex.md").write_text("# Audit\n", encoding="utf-8")
+
+    completed = _detect_completed_rounds(workspace, ["gemini", "codex"], 1)
+    assert completed == set()  # Not complete without final-plan.md
+
+    # Now create the final plan
+    (workspace / "final-plan.md").write_text("# Final\n", encoding="utf-8")
+    completed = _detect_completed_rounds(workspace, ["gemini", "codex"], 1)
+    assert completed == {1}  # Now complete
+
+
+def test_detect_missing_auditors_for_round(tmp_path: "Path") -> None:
+    """_detect_missing_auditors_for_round returns auditors without output."""
+    from planora.cli.plan import _detect_missing_auditors_for_round  # noqa: PLC0415
+
+    workspace = tmp_path / ".plan-workspace"
+    workspace.mkdir()
+    # Only gemini has output
+    (workspace / "audit-gemini.md").write_text("# Audit\n", encoding="utf-8")
+
+    missing = _detect_missing_auditors_for_round(workspace, ["gemini", "codex"], 1)
+    assert missing == ["codex"]

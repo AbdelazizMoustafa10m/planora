@@ -36,6 +36,7 @@ from planora.tui.screens.wizard import WizardLaunch, WizardScreen
 if TYPE_CHECKING:
     from planora.agents.registry import AgentRegistry
     from planora.agents.runner import AgentRunner
+    from planora.core.config import PlanораSettings
     from planora.workflow.engine import WorkflowControl
 
 
@@ -82,6 +83,7 @@ class PlanoraTUI(App[None]):
         audit_template_path: Path | None = None,
         refine_template_path: Path | None = None,
         prompt_base_dir: Path = Path("."),
+        settings: PlanораSettings | None = None,
     ) -> None:
         super().__init__()
         self.task_input = task_input
@@ -96,6 +98,7 @@ class PlanoraTUI(App[None]):
         self._audit_template_path = audit_template_path
         self._refine_template_path = refine_template_path
         self._prompt_base_dir = prompt_base_dir
+        self._settings = settings
 
         self._dashboard_screen: DashboardScreen | None = None
         self._workflow_worker: Worker[None] | None = None
@@ -348,8 +351,22 @@ class PlanoraTUI(App[None]):
         control = WorkflowControl()
         self._workflow_control = control
 
+        # Resolve workspace with settings-driven reports_dir when available
+        settings = self._settings
+        if settings is not None:
+            workspace = WorkspaceManager(
+                self._project_root,
+                reports_dir=Path(settings.effective_reports_dir),
+            )
+            snapshot_interval = settings.effective_cli_status_interval
+            stall_check_interval = settings.effective_monitor_interval
+        else:
+            workspace = WorkspaceManager(self._project_root)
+            snapshot_interval = None
+            stall_check_interval = 5.0
+
         workflow = PlanWorkflow(
-            workspace=WorkspaceManager(self._project_root),
+            workspace=workspace,
             registry=self._agent_registry or AgentRegistry(),
             runner=self._agent_runner or AgentRunner(),
             ui=TextualUICallback(self),
@@ -362,6 +379,9 @@ class PlanoraTUI(App[None]):
             audit_template_path=self._audit_template_path,
             refine_template_path=self._refine_template_path,
             prompt_base_dir=self._prompt_base_dir,
+            snapshot_interval=snapshot_interval,
+            stall_check_interval=stall_check_interval,
+            settings=settings,
         )
         self._workflow_phase_runner = workflow._phase_runner
 

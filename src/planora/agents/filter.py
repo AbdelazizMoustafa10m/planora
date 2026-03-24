@@ -17,15 +17,12 @@ class StreamFilter:
     """
 
     SKIP_TYPES_CLAUDE: ClassVar[set[str]] = {
-        "content_block_delta",
         "content_block_stop",
         "message_start",
         "message_stop",
     }
 
-    SKIP_TYPES_CODEX: ClassVar[set[str]] = {
-        "response.output_item.delta",
-    }
+    SKIP_TYPES_CODEX: ClassVar[set[str]] = set()
 
     def __init__(self, stream_format: StreamFormat) -> None:
         self._format = stream_format

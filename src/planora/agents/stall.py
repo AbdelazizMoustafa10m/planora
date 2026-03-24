@@ -90,7 +90,7 @@ class StallDetector:
                 idle = time.monotonic() - last_event_at
                 if idle >= self._current_timeout() and not stall_injected:
                     stall_injected = True
-                    yield StreamEvent(event_type=StreamEventType.STALL)
+                    yield StreamEvent(event_type=StreamEventType.STALL, idle_seconds=idle)
                 continue
 
             if result is _SENTINEL:

@@ -210,6 +210,13 @@ class PlanWorkflow:
                     )
                     continue
 
+                if self._skip_refinement:
+                    self._ui.on_log(
+                        "info",
+                        f"Skipping refinement in round {round_num} (--skip-refinement).",
+                    )
+                    continue
+
                 # b) Refine phase
                 plan_content = await self._current_plan_content()
                 refine_phase = await self.phase_refine(round_num)
@@ -421,7 +428,8 @@ class PlanWorkflow:
         archive_path: Path | None = None
 
         try:
-            report_path = generate_plan_report(
+            report_path = await asyncio.to_thread(
+                generate_plan_report,
                 workspace=self._workspace,
                 plan_result=intermediate,
                 planner=self._planner,
@@ -429,7 +437,7 @@ class PlanWorkflow:
                 audit_rounds=self._audit_rounds,
                 max_concurrency=self._max_concurrency,
             )
-            archive_path = self._workspace.archive()
+            archive_path = await asyncio.to_thread(self._workspace.archive)
         except OSError as exc:
             self._ui.on_log("warning", f"Report/archive step failed (non-fatal): {exc}")
             return None, None, None
@@ -520,7 +528,8 @@ class PlanWorkflow:
     def _record_phase_result(self, phase: PhaseResult) -> None:
         """Append a phase result and mirror its agent outputs in the run summary."""
         self._phases.append(phase)
-        self._agent_results[phase.name] = list(phase.agent_results)
+        for ar in phase.agent_results:
+            self._agent_results.setdefault(ar.agent_name, []).append(ar)
 
     @staticmethod
     def _audit_phase_name(round_num: int) -> str:

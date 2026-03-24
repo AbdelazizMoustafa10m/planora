@@ -192,7 +192,10 @@ class PhaseRunner:
         self._ui.on_agent_start(agent.name, name)
 
         started_at = datetime.now()
-        with _phase_span(self._telemetry, name, agent=agent.name):
+        with (
+            _phase_span(self._telemetry, name, agent=agent.name),
+            _agent_span(self._telemetry, name, agent.name),
+        ):
             result = await self._runner.run(
                 agent=agent,
                 prompt=prompt,
@@ -258,7 +261,7 @@ class PhaseRunner:
 
         with _phase_span(self._telemetry, name):
             coroutines = [
-                self._run_with_semaphore(cfg, prompt, output_path, dry_run)
+                self._run_with_semaphore(cfg, prompt, output_path, dry_run, name)
                 for cfg, prompt, output_path in agents
             ]
             raw_results: list[AgentResult | BaseException] = await asyncio.gather(
@@ -322,10 +325,11 @@ class PhaseRunner:
         prompt: str,
         output_path: Path,
         dry_run: bool,
+        phase_name: str,
     ) -> AgentResult:
         """Acquire the semaphore then run the agent, notifying the UI at start."""
         async with self._semaphore:
-            self._ui.on_agent_start(agent.name, agent.name)
+            self._ui.on_agent_start(agent.name, phase_name)
             return await self._runner.run(
                 agent=agent,
                 prompt=prompt,
@@ -372,6 +376,17 @@ def _phase_span(
     if telemetry is None:
         return contextlib.nullcontext()
     return telemetry.phase_span(name, agent=agent)
+
+
+def _agent_span(
+    telemetry: PlanoraTelemetry | None,
+    phase: str,
+    agent: str,
+) -> contextlib.AbstractContextManager[object]:
+    """Return a telemetry agent span, or a no-op context manager when disabled."""
+    if telemetry is None:
+        return contextlib.nullcontext()
+    return telemetry.agent_span(phase, agent)
 
 
 def _failed_phase(name: str, reason: str) -> PhaseResult:

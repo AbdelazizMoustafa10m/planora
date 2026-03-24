@@ -262,7 +262,7 @@ async def test_run_parallel_aggregates_costs_and_normalizes_exceptions(
     assert "subprocess crashed" in (phase.error or "")
     assert [result.agent_name for result in phase.agent_results] == ["gemini", "codex"]
     assert phase.agent_results[1].exit_code == 1
-    assert ui.agent_starts == [("gemini", "gemini"), ("codex", "codex")]
+    assert ui.agent_starts == [("gemini", "audit"), ("codex", "audit")]
     assert [agent for agent, _result in ui.agent_ends] == ["gemini", "codex"]
 
 

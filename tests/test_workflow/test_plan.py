@@ -466,3 +466,65 @@ async def test_run_skips_audit_and_refine_for_completed_rounds(monkeypatch, tmp_
     assert "refine" not in phase_names
     assert ("parallel", "audit") not in workflow._phase_runner.calls
     assert ("phase", "refine") not in workflow._phase_runner.calls
+
+
+@pytest.mark.asyncio
+async def test_run_skip_refinement_skips_refine_phase(monkeypatch, tmp_path) -> None:
+    """skip_refinement=True should skip the refine phase even when audits succeed."""
+    planner = _agent_config("claude")
+    gemini = _agent_config("gemini")
+    registry = _RegistryStub({"claude": planner, "gemini": gemini})
+    workspace = WorkspaceManager(tmp_path)
+    ui = _RecordingUI()
+
+    async def plan_handler(agent: AgentConfig, output_path):
+        del agent
+        output_path.write_text("# Initial plan\n", encoding="utf-8")
+        return PhaseResult(
+            name="plan",
+            status=PhaseStatus.DONE,
+            output_files=[output_path],
+            agent_results=[_agent_result("claude", output_path)],
+        )
+
+    async def audit_handler(agents):
+        agent, _prompt, output_path = agents[0]
+        output_path.write_text("# Audit\nLooks good\n", encoding="utf-8")
+        return PhaseResult(
+            name="audit",
+            status=PhaseStatus.DONE,
+            output_files=[output_path],
+            agent_results=[_agent_result(agent.name, output_path)],
+        )
+
+    workflow = PlanWorkflow(
+        workspace=workspace,
+        registry=registry,
+        runner=object(),
+        ui=ui,
+        planner="claude",
+        auditors=["gemini"],
+        skip_refinement=True,
+    )
+    workflow._phase_runner = _PhaseRunnerStub(
+        {
+            "plan": plan_handler,
+            "audit": audit_handler,
+        }
+    )
+    _install_report_stubs(monkeypatch, workspace, tmp_path)
+    monkeypatch.setattr(
+        "planora.workflow.plan.build_plan_prompt",
+        lambda *_args, **_kwargs: "plan prompt",
+    )
+    monkeypatch.setattr("planora.workflow.plan.build_audit_prompt", lambda **_kwargs: "audit")
+
+    result = await workflow.run("Test skip refinement")
+
+    assert result.success is True
+    phase_names = [phase.name for phase in result.phases]
+    assert "refine" not in phase_names
+    assert "plan" in phase_names
+    assert "audit" in phase_names
+    assert any("Skipping refinement" in message for _level, message in ui.logs)
+    assert ("phase", "refine") not in workflow._phase_runner.calls

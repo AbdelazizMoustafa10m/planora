@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal  # noqa: TC003 — required by Pydantic runtime validation
 from enum import StrEnum
 from pathlib import Path  # noqa: TC003 — required by Pydantic runtime validation
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -50,11 +49,12 @@ class StreamEvent(BaseModel):
     session_id: str | None = None
     token_usage: dict[str, int] | None = None
 
-    # Retry/rate limit fields
+    # Retry/rate limit/stall fields
     retry_attempt: int | None = None
     retry_max: int | None = None
     retry_delay_ms: int | None = None
     error_category: str | None = None
+    idle_seconds: float | None = None
 
     # Raw event for debugging
     raw: dict[str, object] | None = None
@@ -166,7 +166,7 @@ class PlanResult:
     archive_path: Path | None
     total_duration: timedelta
     total_cost_usd: Decimal | None
-    agent_results: dict[str, list[AgentResult]]  # Per-phase results keyed by phase name
+    agent_results: dict[str, list[AgentResult]]  # Per-agent results keyed by agent name
     success: bool
 
     @property
@@ -182,49 +182,35 @@ class PlanResult:
         return succeeded, total
 
 
-class UICallback(ABC):
+class UICallback(Protocol):
     """Contract between workflow engine and UI."""
 
-    @abstractmethod
     def on_phase_start(self, phase: str, label: str) -> None: ...
 
-    @abstractmethod
     def on_phase_end(self, phase: str, result: PhaseResult) -> None: ...
 
-    @abstractmethod
     def on_agent_start(self, agent: str, phase: str) -> None: ...
 
-    @abstractmethod
     def on_agent_end(self, agent: str, result: AgentResult) -> None: ...
 
-    @abstractmethod
     def on_agent_state_change(self, agent: str, state: AgentState) -> None: ...
 
-    @abstractmethod
     def on_tool_start(self, agent: str, tool: ToolExecution) -> None: ...
 
-    @abstractmethod
     def on_tool_done(self, agent: str, tool: ToolExecution) -> None: ...
 
-    @abstractmethod
     def on_cost_update(self, agent: str, cost_usd: Decimal) -> None: ...
 
-    @abstractmethod
     def on_stall(self, agent: str, idle_seconds: float) -> None: ...
 
-    @abstractmethod
     def on_rate_limit(self, agent: str, retry_after_ms: int | None) -> None: ...
 
-    @abstractmethod
     def on_retry(self, agent: str, attempt: int, max_retries: int, error: str) -> None: ...
 
-    @abstractmethod
     def on_snapshot(self, snapshot: AgentMonitorSnapshot) -> None: ...
 
-    @abstractmethod
     def on_log(self, level: str, message: str) -> None: ...
 
-    @abstractmethod
     def on_pipeline_update(self, statuses: dict[str, PhaseStatus]) -> None: ...
 
     def dispatch_agent_event(self, agent: str, event: StreamEvent) -> None:
@@ -265,7 +251,7 @@ class UICallback(ABC):
                 if event.cost_usd is not None:
                     self.on_cost_update(agent, event.cost_usd)
             case StreamEventType.STALL:
-                self.on_stall(agent, 0.0)
+                self.on_stall(agent, event.idle_seconds or 0.0)
             case StreamEventType.RATE_LIMIT:
                 self.on_rate_limit(agent, event.retry_delay_ms)
             case StreamEventType.RETRY:

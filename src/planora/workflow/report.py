@@ -162,6 +162,23 @@ def _build_pipeline_config_section(
     )
 
 
+def _phase_display_label(phase_key: str) -> str:
+    """Map internal phase keys to human-facing labels for the report."""
+    if phase_key == "plan":
+        return "Plan"
+    if phase_key == "report":
+        return "Report"
+    if phase_key == "audit":
+        return "Audit R1"
+    if phase_key == "refine":
+        return "Refine R1"
+    if phase_key.startswith("audit-r"):
+        return f"Audit R{phase_key.removeprefix('audit-r')}"
+    if phase_key.startswith("refine-r"):
+        return f"Refine R{phase_key.removeprefix('refine-r')}"
+    return phase_key.replace("-", " ").title()
+
+
 def _build_phase_summary_section(phases: list[PhaseResult], planner: str) -> str:
     _cols = "| Phase       | Status    | Duration | Agent(s)        | Cost     | Output File |"
     _sep = "|-------------|-----------|----------|-----------------|----------|-------------|"
@@ -174,15 +191,18 @@ def _build_phase_summary_section(phases: list[PhaseResult], planner: str) -> str
             else planner
         )
         output_file = phase.output_files[0].name if phase.output_files else "—"
+        label = _phase_display_label(phase.name)
         rows.append(
-            f"| {phase.name:<11} | {phase.status.value:<9} | {_format_duration(phase.duration):<8} "
+            f"| {label:<11} | {phase.status.value:<9} | {_format_duration(phase.duration):<8} "
             f"| {agents_in_phase:<15} | {_format_cost(phase.cost_usd):<8} | {output_file:<20} |\n"
         )
-    # Report row is always appended at generation time
-    rows.append(
-        "| report      | done      | \u2014        | \u2014               | \u2014        "
-        "| plan-report.md      |\n"
-    )
+    # Report row is rendered from actual data if present in phases, otherwise as placeholder
+    report_phase = next((p for p in phases if p.name == "report"), None)
+    if report_phase is None:
+        rows.append(
+            f"| {'Report':<11} | {'done':<9} | {'—':<8} "
+            f"| {'—':<15} | {'—':<8} | {'plan-report.md':<20} |\n"
+        )
     return "".join(rows)
 
 

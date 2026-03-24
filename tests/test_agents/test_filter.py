@@ -14,7 +14,7 @@ from planora.agents.registry import StreamFormat
         (
             StreamFormat.CLAUDE,
             '{"type":"content_block_delta","delta":{"type":"text_delta"}}',
-            False,
+            True,
         ),
         (
             StreamFormat.CLAUDE,
@@ -27,7 +27,7 @@ from planora.agents.registry import StreamFormat
             True,
         ),
         (StreamFormat.CLAUDE, '{"message":"no type field"}', True),
-        (StreamFormat.CODEX, '{"type":"response.output_item.delta"}', False),
+        (StreamFormat.CODEX, '{"type":"response.output_item.delta"}', True),
         (StreamFormat.CODEX, '{"type":"item.completed"}', True),
         (StreamFormat.COPILOT, '{"toolName":"Read"}', True),
     ],
@@ -55,4 +55,4 @@ async def test_filter_stream_preserves_actionable_lines_in_order() -> None:
         line async for line in StreamFilter(StreamFormat.CLAUDE).filter_stream(raw_lines())
     ]
 
-    assert filtered == ['{"type":"assistant"}', '{"type":"result"}']
+    assert filtered == ['{"type":"content_block_delta"}', '{"type":"assistant"}', '{"type":"result"}']

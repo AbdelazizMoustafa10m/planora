@@ -97,6 +97,23 @@ class PlanoraTelemetry:
         ) as span:
             yield span
 
+    @contextmanager
+    def agent_span(self, phase: str, agent: str) -> Iterator[Any | None]:
+        """Create an agent-level span within a phase."""
+        if not self._enabled or self._tracer is None:
+            yield None
+            return
+
+        attributes = {
+            "planora.phase": phase,
+            "planora.agent": agent,
+        }
+        with self._tracer.start_as_current_span(
+            f"planora.agent.{agent}",
+            attributes=attributes,
+        ) as span:
+            yield span
+
     def tool_span(self, agent: str, tool: ToolExecution) -> Any | None:
         """Create a child span for a tool invocation."""
         if not self._enabled or self._tracer is None:

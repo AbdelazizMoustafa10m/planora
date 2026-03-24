@@ -48,20 +48,60 @@ def _detect_completed_rounds(
     """Return the set of round numbers whose audit outputs are all present and non-empty.
 
     A round is considered complete when every auditor in the list has produced a
-    non-empty audit file for that round.  The final-plan.md produced by refinement
-    is checked for round 1; for subsequent rounds the refined plan overwrites the
-    same file so we only test audit file presence.
+    non-empty audit file for that round AND the subsequent refinement output
+    (final-plan.md) exists, indicating the full round was processed.
     """
     completed: set[int] = set()
     if not auditors:
         return completed
+    final_plan = workspace_dir / "final-plan.md"
+    has_final = final_plan.exists() and final_plan.stat().st_size > 0
     for round_num in range(1, total_rounds + 1):
         audit_files_present = all(
             _audit_file_nonempty(workspace_dir, auditor, round_num) for auditor in auditors
         )
-        if audit_files_present:
+        # A round is truly complete only when all audits AND refinement are done
+        if audit_files_present and has_final:
             completed.add(round_num)
     return completed
+
+
+def _detect_missing_auditors_for_round(
+    workspace_dir: Path,
+    auditors: list[str],
+    round_num: int,
+) -> list[str]:
+    """Return auditors that have NOT produced output for the given round."""
+    return [
+        auditor
+        for auditor in auditors
+        if not _audit_file_nonempty(workspace_dir, auditor, round_num)
+    ]
+
+
+def _infer_planner_from_workspace(workspace_dir: Path) -> str | None:
+    """Attempt to infer the planner agent from workspace artifacts.
+
+    Reads the stream log for the initial plan (initial-plan.stream) and checks
+    for known agent identifiers. Returns None if detection fails.
+    """
+    stream_file = workspace_dir / "initial-plan.stream"
+    if not stream_file.exists():
+        return None
+    try:
+        head = stream_file.read_text(encoding="utf-8", errors="replace")[:2000]
+        # Claude streams contain session_id and type=system/subtype=init
+        if '"subtype":"init"' in head or '"subtype": "init"' in head:
+            return "claude"
+        # Codex streams contain thread.started
+        if '"type":"thread.started"' in head or '"type": "thread.started"' in head:
+            return "codex"
+        # Gemini streams contain usageMetadata or candidates
+        if "usageMetadata" in head or "candidates" in head:
+            return "gemini"
+    except OSError:
+        pass
+    return None
 
 
 def _audit_file_nonempty(workspace_dir: Path, auditor: str, round_num: int) -> bool:
@@ -268,6 +308,7 @@ def plan_run(
                 audit_template_path=settings.prompts.audit,
                 refine_template_path=settings.prompts.refine,
                 prompt_base_dir=settings.effective_prompt_base_dir,
+                settings=settings,
             ).run()
             return
         except ImportError:
@@ -320,6 +361,8 @@ def plan_run(
             console.print(f"  Plan: {result.final_plan_path}")
         if result.archive_path:
             console.print(f"  Archive: {result.archive_path}")
+        # Clean up active workspace after successful archive (§5.9)
+        workspace.cleanup()
         return
 
     console.print("\n[bold red]Planning failed[/bold red]")
@@ -432,6 +475,8 @@ def plan_wizard(
             console.print(f"  Plan: {result.final_plan_path}")
         if result.archive_path:
             console.print(f"  Archive: {result.archive_path}")
+        # Clean up active workspace after successful archive (§5.9)
+        workspace.cleanup()
         return
 
     console.print("\n[bold red]Planning failed[/bold red]")
@@ -519,6 +564,26 @@ def plan_resume(
     # can skip them rather than re-running or wiping their outputs.
     completed_rounds = _detect_completed_rounds(workspace_dir, effective_auditors, effective_rounds)
 
+    # For partially completed rounds, detect which auditors still need to run
+    # and restrict the auditor list to only the missing ones.
+    for round_num in range(1, effective_rounds + 1):
+        if round_num not in completed_rounds:
+            missing = _detect_missing_auditors_for_round(
+                workspace_dir, effective_auditors, round_num
+            )
+            if missing and len(missing) < len(effective_auditors):
+                console.print(
+                    f"  Round {round_num}: re-running {len(missing)} missing auditor(s): "
+                    f"{', '.join(missing)}"
+                )
+                # Narrow auditor list to only the missing ones for this resume
+                effective_auditors = missing
+                break  # Only handle the first incomplete round
+
+    # Infer the original planner from workspace artifacts when possible
+    inferred_planner = _infer_planner_from_workspace(workspace_dir)
+    effective_planner = inferred_planner or settings.effective_planner
+
     configure_prompt_templates(
         plan=settings.prompts.plan,
         audit=settings.prompts.audit,
@@ -538,7 +603,7 @@ def plan_resume(
         registry=AgentRegistry.from_settings(settings),
         runner=AgentRunner(),
         ui=ui,
-        planner=settings.effective_planner,
+        planner=effective_planner,
         auditors=effective_auditors,
         audit_rounds=effective_rounds,
         dry_run=False,
@@ -562,6 +627,8 @@ def plan_resume(
             console.print(f"  Plan: {result.final_plan_path}")
         if result.archive_path:
             console.print(f"  Archive: {result.archive_path}")
+        # Clean up active workspace after successful archive (§5.9)
+        workspace.cleanup()
         return
 
     console.print("\n[bold red]Resume failed[/bold red]")

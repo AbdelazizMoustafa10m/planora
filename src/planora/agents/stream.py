@@ -284,6 +284,14 @@ class StreamParser:
         return events
 
     def _parse_claude_result(self, data: dict[str, Any]) -> list[StreamEvent]:
+        # Parse token usage from Claude's usage fields
+        usage = data.get("usage")
+        token_usage: dict[str, int] | None = None
+        if isinstance(usage, dict):
+            token_usage = {
+                k: int(v) for k, v in usage.items() if isinstance(v, (int, float))
+            } or None
+
         return [
             StreamEvent(
                 event_type=StreamEventType.RESULT,
@@ -291,6 +299,7 @@ class StreamParser:
                 duration_ms=_int_or_none(data.get("duration_ms")),
                 num_turns=_int_or_none(data.get("num_turns")),
                 session_id=_str_or_none(data.get("session_id")),
+                token_usage=token_usage,
                 raw=data,
             )
         ]

@@ -53,15 +53,17 @@ class AgentRunner:
         hooks_manager: ClaudeHooksManager | None = None,
     ) -> AgentResult:
         """Run the agent subprocess and return a fully-populated AgentResult."""
-        # Step 1 — Build command
-        cmd = self._build_command(agent, prompt, output_path, mode)
-
         # Step 2 — Install Claude hooks when a manager is provided for a Claude agent.
         # install_hooks() creates the hook scripts on disk (side effect); cleanup() removes
         # them in the finally block so no stale scripts are left behind.
         is_hooks_installed = hooks_manager is not None and agent.name == "claude"
+        hooks_config: dict[str, object] = {}
         if is_hooks_installed and hooks_manager is not None:
-            hooks_manager.install_hooks(agent)
+            hooks_config = hooks_manager.install_hooks(agent)
+
+        # Step 1 — Build command (after hooks_config is resolved so it can be embedded)
+        cmd = self._build_command(agent, prompt, output_path, mode, hooks_config)
+
         env = {**os.environ, **agent.env_vars}
 
         # Step 3 — Handle dry_run
@@ -219,6 +221,7 @@ class AgentRunner:
         prompt: str,
         output_path: Path,
         mode: AgentMode,
+        hooks_config: dict[str, object] | None = None,
     ) -> list[str]:
         """Build the subprocess command list."""
         cmd = [agent.binary, agent.subcommand, prompt]
@@ -227,6 +230,17 @@ class AgentRunner:
         # Codex uses -o flag for direct file output
         if agent.output_extraction.strategy == OutputExtraction.Strategy.DIRECT_FILE:
             cmd.extend(["-o", str(output_path)])
+        if hooks_config and "hooks" in hooks_config:
+            import json
+            import tempfile
+            settings_content = json.dumps(hooks_config)
+            # Write to a temp file that persists for the duration of the subprocess
+            fd = tempfile.NamedTemporaryFile(  # noqa: SIM115 — delete=False requires manual close
+                mode="w", suffix=".json", prefix="planora-hooks-", delete=False
+            )
+            fd.write(settings_content)
+            fd.close()
+            cmd.extend(["--settings-file", fd.name])
         return cmd
 
 

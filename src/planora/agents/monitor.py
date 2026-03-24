@@ -58,7 +58,7 @@ class AgentMonitor:
             self._session_id = event.session_id
 
     def _handle_state_change(self, event: StreamEvent) -> None:
-        if event.tool_detail == "thinking":
+        if event.text_preview == "thinking":
             self._state = AgentState.THINKING
         else:
             self._state = AgentState.WRITING
