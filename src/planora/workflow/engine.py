@@ -26,12 +26,14 @@ class PhaseRunner:
         runner: AgentRunner,
         ui: UICallback,
         max_concurrency: int = 3,
+        snapshot_interval: float | None = None,
     ) -> None:
         self._runner = runner
         self._ui = ui
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._active_processes: list[asyncio.subprocess.Process] = []
         self._shutting_down = False
+        self._snapshot_interval = snapshot_interval
 
     # ------------------------------------------------------------------
     # Signal handling
@@ -109,6 +111,10 @@ class PhaseRunner:
             mode=AgentMode.PLAN,
             dry_run=dry_run,
             on_event=lambda ev: self._ui.dispatch_agent_event(agent.name, ev),
+            on_snapshot=self._ui.on_snapshot,
+            snapshot_interval=self._snapshot_interval,
+            on_process_start=self._register_process,
+            on_process_end=self._unregister_process,
         )
 
         self._ui.on_agent_end(agent.name, result)
@@ -231,7 +237,20 @@ class PhaseRunner:
                 mode=AgentMode.PLAN,
                 dry_run=dry_run,
                 on_event=lambda ev: self._ui.dispatch_agent_event(agent.name, ev),
+                on_snapshot=self._ui.on_snapshot,
+                snapshot_interval=self._snapshot_interval,
+                on_process_start=self._register_process,
+                on_process_end=self._unregister_process,
             )
+
+    def _register_process(self, proc: asyncio.subprocess.Process) -> None:
+        """Track a live subprocess so shutdown signals can reach it."""
+        self._active_processes.append(proc)
+
+    def _unregister_process(self, proc: asyncio.subprocess.Process) -> None:
+        """Stop tracking a subprocess once it has exited or been cancelled."""
+        if proc in self._active_processes:
+            self._active_processes.remove(proc)
 
 
 # ------------------------------------------------------------------

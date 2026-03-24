@@ -15,6 +15,7 @@ from planora.core.events import (
     PhaseStatus,
     StreamEvent,
     StreamEventType,
+    ToolCounters,
     ToolExecution,
 )
 from planora.workflow.engine import PhaseRunner, _failed_phase
@@ -49,6 +50,7 @@ class _RecordingUI:
     agent_starts: list[tuple[str, str]] = field(default_factory=list)
     agent_ends: list[tuple[str, AgentResult]] = field(default_factory=list)
     dispatched: list[tuple[str, StreamEventType]] = field(default_factory=list)
+    snapshots: list[AgentMonitorSnapshot] = field(default_factory=list)
 
     def on_phase_start(self, phase: str, label: str) -> None:
         self.phase_starts.append((phase, label))
@@ -84,7 +86,7 @@ class _RecordingUI:
         del agent, attempt, max_retries, error
 
     def on_snapshot(self, snapshot: AgentMonitorSnapshot) -> None:
-        del snapshot
+        self.snapshots.append(snapshot)
 
     def on_log(self, level: str, message: str) -> None:
         del level, message
@@ -100,6 +102,9 @@ class _StubRunner:
     def __init__(self, outcomes: dict[str, AgentResult | BaseException]) -> None:
         self._outcomes = outcomes
         self.calls: list[tuple[str, AgentMode, bool]] = []
+        self.snapshot_intervals: list[float | None] = []
+        self.process_start_calls = 0
+        self.process_end_calls = 0
 
     async def run(
         self,
@@ -110,14 +115,45 @@ class _StubRunner:
         mode: AgentMode,
         dry_run: bool,
         on_event,
+        on_snapshot,
+        snapshot_interval,
+        on_process_start,
+        on_process_end,
     ) -> AgentResult:
         del prompt, output_path
         self.calls.append((agent.name, mode, dry_run))
+        self.snapshot_intervals.append(snapshot_interval)
+        process = _StubProcess()
+        on_process_start(process)
+        self.process_start_calls += 1
         on_event(StreamEvent(event_type=StreamEventType.TEXT, text_preview="streamed"))
+        on_snapshot(
+            AgentMonitorSnapshot(
+                agent_name=agent.name,
+                state=AgentState.THINKING,
+                elapsed=timedelta(seconds=1),
+                counters=ToolCounters(),
+                active_tools=[],
+                recent_tools=[],
+            )
+        )
         outcome = self._outcomes[agent.name]
+        on_process_end(process)
+        self.process_end_calls += 1
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
+
+
+class _StubProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.returncode = 0
 
 
 def _make_agent(name: str) -> AgentConfig:
@@ -232,3 +268,33 @@ def test_failed_phase_helper_returns_failed_status() -> None:
     assert phase.name == "audit"
     assert phase.status == PhaseStatus.FAILED
     assert phase.error == "shutdown"
+
+
+@pytest.mark.asyncio
+async def test_run_phase_forwards_snapshots_and_tracks_processes(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(PhaseRunner, "_install_signal_handlers", lambda self: None)
+
+    ui = _RecordingUI()
+    agent = _make_agent("claude")
+    result = _agent_result(
+        agent_name=agent.name,
+        output_path=tmp_path / "initial-plan.md",
+    )
+    runner = _StubRunner({agent.name: result})
+    phase_runner = PhaseRunner(runner, ui, snapshot_interval=2.5)
+
+    await phase_runner.run_phase(
+        "plan",
+        agent,
+        "prompt text",
+        result.output_path,
+    )
+
+    assert len(ui.snapshots) == 1
+    assert runner.snapshot_intervals == [2.5]
+    assert runner.process_start_calls == 1
+    assert runner.process_end_calls == 1
+    assert phase_runner._active_processes == []

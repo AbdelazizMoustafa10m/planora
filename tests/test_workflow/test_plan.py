@@ -384,3 +384,33 @@ async def test_run_report_phase_failure_is_non_fatal(monkeypatch, tmp_path) -> N
     assert result.archive_path is None
     assert result.final_plan_path == workspace.workspace_dir / "initial-plan.md"
     assert any("Report/archive step failed" in message for _level, message in ui.logs)
+
+
+@pytest.mark.asyncio
+async def test_run_skip_planning_reuses_existing_initial_plan(monkeypatch, tmp_path) -> None:
+    planner = _agent_config("claude")
+    registry = _RegistryStub({"claude": planner})
+    workspace = WorkspaceManager(tmp_path)
+    workspace.ensure_dirs()
+    initial_plan = workspace.write_file("initial-plan.md", "# Existing plan\n")
+    ui = _RecordingUI()
+
+    workflow = PlanWorkflow(
+        workspace=workspace,
+        registry=registry,
+        runner=object(),
+        ui=ui,
+        planner="claude",
+        auditors=[],
+        skip_planning=True,
+        reuse_workspace=True,
+    )
+    _install_report_stubs(monkeypatch, workspace, tmp_path)
+
+    result = await workflow.run("Resume the existing planning run")
+
+    assert result.success is True
+    assert [phase.name for phase in result.phases] == ["plan", "audit", "report"]
+    assert result.phases[0].status == PhaseStatus.SKIPPED
+    assert initial_plan.read_text(encoding="utf-8") == "# Existing plan\n"
+    assert result.final_plan_path == initial_plan

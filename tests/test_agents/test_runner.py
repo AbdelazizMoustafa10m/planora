@@ -30,9 +30,19 @@ class _FakeProcess:
         self.stderr = _make_stream_reader(stderr_lines)
         self.returncode = exit_code
         self._exit_code = exit_code
+        self.terminated = False
+        self.killed = False
 
     async def wait(self) -> int:
         return self._exit_code
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = self._exit_code
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = self._exit_code
 
 
 def test_build_command_handles_agent_specific_output_flags(registry, tmp_path) -> None:
@@ -97,7 +107,7 @@ def test_write_output_strips_preamble_for_jq_filter(tmp_path) -> None:
         agent=agent,
         output_path=output_path,
         text_chunks=["Preamble\nstill preamble\n# Title\nBody"],
-        secondary_chunks=[],
+        stdout_chunks=[],
     )
 
     assert output_path.read_text(encoding="utf-8") == "# Title\nBody"
@@ -122,7 +132,7 @@ def test_write_output_uses_secondary_chunks_for_stderr_stream(tmp_path) -> None:
         agent=agent,
         output_path=output_path,
         text_chunks=["ignored"],
-        secondary_chunks=["# Final\n", "Plan\n"],
+        stdout_chunks=["# Final\n", "Plan\n"],
     )
 
     assert output_path.read_text(encoding="utf-8") == "# Final\nPlan\n"
@@ -194,3 +204,58 @@ async def test_run_processes_stream_pipeline_and_writes_outputs(monkeypatch, tmp
     assert result.exit_code == 0
     assert result.output_empty is False
     assert result.duration >= timedelta(0)
+
+
+@pytest.mark.asyncio
+async def test_run_keeps_gemini_stderr_in_log_and_emits_snapshots(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    agent = AgentConfig(
+        name="gemini-test",
+        binary="gemini",
+        model="gemini-3.1-pro-preview",
+        subcommand="-p",
+        flags={AgentMode.PLAN: ["--approval-mode", "plan"], AgentMode.FIX: []},
+        stream_format=StreamFormat.GEMINI,
+        output_extraction=OutputExtraction(
+            strategy=OutputExtraction.Strategy.STDOUT_CAPTURE,
+            stderr_as_stream=True,
+        ),
+    )
+    stdout_lines = ["# Final plan\n", "Ship it\n"]
+    stderr_lines = [
+        '{"functionCall":{"name":"Read","args":{"file_path":"README.md"}}}\n',
+        '{"candidates":[{"content":{"parts":[{"text":"Gemini preview"}]}}],"usageMetadata":{}}\n',
+    ]
+
+    async def fake_create_subprocess_exec(*_cmd, **_kwargs):
+        return _FakeProcess(stdout_lines=stdout_lines, stderr_lines=stderr_lines)
+
+    monkeypatch.setattr(
+        "planora.agents.runner.asyncio.create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    output_path = tmp_path / "gemini.md"
+    events = []
+    snapshots = []
+    result = await AgentRunner().run(
+        agent=agent,
+        prompt="review the plan",
+        output_path=output_path,
+        on_event=events.append,
+        on_snapshot=snapshots.append,
+    )
+
+    assert output_path.read_text(encoding="utf-8") == "".join(stdout_lines)
+    assert result.stream_path.read_text(encoding="utf-8") == "".join(stderr_lines)
+    assert result.log_path.read_text(encoding="utf-8") == "".join(stderr_lines)
+    assert [event.event_type for event in events] == [
+        StreamEventType.TOOL_START,
+        StreamEventType.TEXT,
+        StreamEventType.RESULT,
+    ]
+    assert snapshots
+    assert snapshots[-1].state.value == "completed"
+    assert result.exit_code == 0

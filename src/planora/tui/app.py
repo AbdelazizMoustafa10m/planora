@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from textual import work
 from textual.app import App
@@ -32,6 +32,10 @@ from planora.tui.callbacks import (
 from planora.tui.screens.dashboard import DashboardScreen
 from planora.tui.screens.report import ReportScreen
 from planora.tui.screens.wizard import WizardLaunch, WizardScreen
+
+if TYPE_CHECKING:
+    from planora.agents.registry import AgentRegistry
+    from planora.agents.runner import AgentRunner
 
 
 class WorkflowCompleted(Message, bubble=False):
@@ -71,6 +75,12 @@ class PlanoraTUI(App[None]):
         audit_rounds: int = 1,
         max_concurrency: int = 3,
         project_root: Path | None = None,
+        registry: AgentRegistry | None = None,
+        runner: AgentRunner | None = None,
+        plan_template_path: Path | None = None,
+        audit_template_path: Path | None = None,
+        refine_template_path: Path | None = None,
+        prompt_base_dir: Path = Path("."),
     ) -> None:
         super().__init__()
         self.task_input = task_input
@@ -79,6 +89,12 @@ class PlanoraTUI(App[None]):
         self._audit_rounds = audit_rounds
         self._max_concurrency = max_concurrency
         self._project_root = project_root or Path.cwd()
+        self._agent_registry = registry
+        self._agent_runner = runner
+        self._plan_template_path = plan_template_path
+        self._audit_template_path = audit_template_path
+        self._refine_template_path = refine_template_path
+        self._prompt_base_dir = prompt_base_dir
 
         self._dashboard_screen: DashboardScreen | None = None
         self._workflow_worker: Worker[None] | None = None
@@ -300,13 +316,17 @@ class PlanoraTUI(App[None]):
 
         workflow = PlanWorkflow(
             workspace=WorkspaceManager(self._project_root),
-            registry=AgentRegistry(),
-            runner=AgentRunner(),
+            registry=self._agent_registry or AgentRegistry(),
+            runner=self._agent_runner or AgentRunner(),
             ui=TextualUICallback(self),
             planner=self._planner,
             auditors=self._auditors,
             audit_rounds=self._audit_rounds,
             max_concurrency=self._max_concurrency,
+            plan_template_path=self._plan_template_path,
+            audit_template_path=self._audit_template_path,
+            refine_template_path=self._refine_template_path,
+            prompt_base_dir=self._prompt_base_dir,
         )
 
         try:

@@ -48,6 +48,9 @@ class PlanWorkflow:
         audit_rounds: int = 1,
         max_concurrency: int = 3,
         dry_run: bool = False,
+        skip_planning: bool = False,
+        reuse_workspace: bool = False,
+        snapshot_interval: float | None = None,
         plan_template_path: Path | None = None,
         audit_template_path: Path | None = None,
         refine_template_path: Path | None = None,
@@ -61,11 +64,28 @@ class PlanWorkflow:
         self._audit_rounds = audit_rounds
         self._max_concurrency = max_concurrency
         self._dry_run = dry_run
+        self._skip_planning = skip_planning
+        self._reuse_workspace = reuse_workspace
         self._plan_template_path = plan_template_path
         self._audit_template_path = audit_template_path
         self._refine_template_path = refine_template_path
         self._prompt_base_dir = prompt_base_dir
-        self._phase_runner = PhaseRunner(runner, ui, max_concurrency)
+        self._phase_runner = PhaseRunner(
+            runner,
+            ui,
+            max_concurrency,
+            snapshot_interval=snapshot_interval,
+        )
+        self._started_at: datetime | None = None
+        self._task_content: str | None = None
+        self._claude_md = ""
+        self._phases: list[PhaseResult] = []
+        self._agent_results: dict[str, list[AgentResult]] = {}
+        self._prior_audits: dict[str, str] = {}
+        self._round_audit_reports: dict[int, dict[str, str]] = {}
+        self._report_path: Path | None = None
+        self._archive_path: Path | None = None
+        self._final_plan_path: Path | None = None
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -95,14 +115,10 @@ class PlanWorkflow:
 
         task_content = self._read_task_input(task_input)
         self._preflight(task_content)
+        self._reset_run_state(task_content=task_content, started_at=started_at)
 
-        claude_md = self._read_claude_md()
-
-        phases: list[PhaseResult] = []
-        agent_results: dict[str, list[AgentResult]] = {}
-        report_path: Path | None = None
-        archive_path: Path | None = None
-        final_plan_path: Path | None = None
+        phases = self._phases
+        agent_results = self._agent_results
 
         # Emit initial pipeline status
         self._emit_pipeline_status(phases)
@@ -110,9 +126,15 @@ class PlanWorkflow:
         # ----------------------------------------------------------------
         # Phase: plan
         # ----------------------------------------------------------------
-        plan_phase = await self._run_plan_phase(task_content, claude_md)
-        phases.append(plan_phase)
-        agent_results["plan"] = list(plan_phase.agent_results)
+        if self._skip_planning:
+            plan_phase = self._build_skipped_plan_phase()
+            self._ui.on_log(
+                "info",
+                "Skipping planning and reusing existing initial-plan.md.",
+            )
+        else:
+            plan_phase = await self.phase_plan()
+        self._record_phase_result(plan_phase)
         self._emit_pipeline_status(phases)
 
         if plan_phase.status == PhaseStatus.FAILED:
@@ -122,60 +144,32 @@ class PlanWorkflow:
                 final_plan_path=None,
                 report_path=None,
                 archive_path=None,
-                started_at=started_at,
+                started_at=self._require_started_at(),
                 success=False,
             )
 
         # ----------------------------------------------------------------
         # Audit / refine rounds
         # ----------------------------------------------------------------
-        # Keep track of accumulated audit content for prompt context
-        prior_audits: dict[str, str] = {}
-
         for round_num in range(1, self._audit_rounds + 1):
-            # Read the plan content to audit (latest available)
-            plan_content = self._workspace.read_file("final-plan.md")
-            if plan_content is None:
-                plan_content = self._workspace.read_file("initial-plan.md") or ""
-
-            # a) Audit phase
-            audit_phase_name = "audit" if round_num == 1 else f"audit-r{round_num}"
-            audit_phase = await self._run_audit_phase(
-                round_num=round_num,
-                phase_name=audit_phase_name,
-                plan_content=plan_content,
-                task_content=task_content,
-                claude_md=claude_md,
-                prior_audits=prior_audits if prior_audits else None,
-            )
-            phases.append(audit_phase)
-            agent_results[audit_phase_name] = list(audit_phase.agent_results)
+            audit_phase = await self.phase_audit(round_num)
+            self._record_phase_result(audit_phase)
             self._emit_pipeline_status(phases)
 
             # Collect non-empty audit results for refinement
-            audit_reports = self._collect_audit_reports(round_num, audit_phase)
+            audit_reports = dict(self._round_audit_reports.get(round_num, {}))
 
             if not audit_reports:
                 self._ui.on_log(
                     "warning",
                     f"All auditors failed in round {round_num}. Skipping refinement.",
                 )
-                # Accumulate empty round in prior_audits for next round context
                 continue
 
             # b) Refine phase
-            refine_phase_name = "refine" if round_num == 1 else f"refine-r{round_num}"
-            refine_phase = await self._run_refine_phase(
-                round_num=round_num,
-                phase_name=refine_phase_name,
-                plan_content=plan_content,
-                task_content=task_content,
-                claude_md=claude_md,
-                audit_reports=audit_reports,
-                prior_audits=prior_audits if prior_audits else None,
-            )
-            phases.append(refine_phase)
-            agent_results[refine_phase_name] = list(refine_phase.agent_results)
+            plan_content = self._current_plan_content()
+            refine_phase = await self.phase_refine(round_num)
+            self._record_phase_result(refine_phase)
             self._emit_pipeline_status(phases)
 
             if refine_phase.status == PhaseStatus.FAILED:
@@ -188,34 +182,112 @@ class PlanWorkflow:
                 self._copy_to_final_plan(plan_content)
 
             # Accumulate current round audits into prior_audits for next round
-            prior_audits[f"Round {round_num}"] = "\n\n".join(audit_reports.values())
+            self._prior_audits[f"Round {round_num}"] = "\n\n".join(audit_reports.values())
 
         # ----------------------------------------------------------------
         # Determine final plan path
         # ----------------------------------------------------------------
-        final_plan_path = self._resolve_final_plan_path()
+        self._final_plan_path = self._resolve_final_plan_path()
 
         # ----------------------------------------------------------------
         # Phase: report (non-fatal)
         # ----------------------------------------------------------------
-        report_phase_result, report_path, archive_path = self._run_report_phase(
-            phases=phases,
-            agent_results=agent_results,
-            final_plan_path=final_plan_path,
-            started_at=started_at,
-        )
+        report_phase_result = self.phase_report()
         if report_phase_result is not None:
             phases.append(report_phase_result)
 
         return self._build_result(
             phases=phases,
             agent_results=agent_results,
-            final_plan_path=final_plan_path,
-            report_path=report_path,
-            archive_path=archive_path,
-            started_at=started_at,
+            final_plan_path=self._final_plan_path,
+            report_path=self._report_path,
+            archive_path=self._archive_path,
+            started_at=self._require_started_at(),
             success=True,
         )
+
+    async def phase_plan(self) -> PhaseResult:
+        """Run the initial planning phase; produces initial-plan.md."""
+        prompt = build_plan_prompt(
+            self._require_task_content(),
+            self._claude_md,
+            template_path=self._plan_template_path,
+            base_dir=self._prompt_base_dir,
+        )
+        output_path = self._workspace.workspace_dir / "initial-plan.md"
+        planner_config = self._registry.get(self._planner)
+        return await self._phase_runner.run_phase(
+            "plan",
+            planner_config,
+            prompt,
+            output_path,
+            self._dry_run,
+        )
+
+    async def phase_audit(self, round: int) -> PhaseResult:
+        """Run one audit round against the latest available plan."""
+        if not self._auditors:
+            return PhaseResult(
+                name=self._audit_phase_name(round),
+                status=PhaseStatus.SKIPPED,
+            )
+
+        prompt = build_audit_prompt(
+            round=round,
+            plan_content=self._current_plan_content(),
+            task_content=self._require_task_content(),
+            claude_md=self._claude_md,
+            prior_audits=self._prior_audits or None,
+            template_path=self._audit_template_path,
+            base_dir=self._prompt_base_dir,
+        )
+
+        phase_result = await self._run_parallel_audits(
+            self._auditors,
+            prompt,
+            round,
+        )
+        self._round_audit_reports[round] = self._collect_audit_reports(round, phase_result)
+        return phase_result
+
+    async def phase_refine(self, round: int) -> PhaseResult:
+        """Run one refinement round using the current round's audit outputs."""
+        phase_name = self._refine_phase_name(round)
+        audit_reports = self._round_audit_reports.get(round, {})
+        if not audit_reports:
+            return PhaseResult(name=phase_name, status=PhaseStatus.SKIPPED)
+
+        prompt = build_refinement_prompt(
+            round=round,
+            plan_content=self._current_plan_content(),
+            task_content=self._require_task_content(),
+            claude_md=self._claude_md,
+            audit_reports=audit_reports,
+            prior_audits=self._prior_audits or None,
+            template_path=self._refine_template_path,
+            base_dir=self._prompt_base_dir,
+        )
+        output_path = self._workspace.workspace_dir / "final-plan.md"
+        planner_config = self._registry.get(self._planner)
+        return await self._phase_runner.run_phase(
+            phase_name,
+            planner_config,
+            prompt,
+            output_path,
+            self._dry_run,
+        )
+
+    def phase_report(self) -> PhaseResult | None:
+        """Generate the report and archive for the current run state."""
+        report_phase_result, report_path, archive_path = self._run_report_phase(
+            phases=self._phases,
+            agent_results=self._agent_results,
+            final_plan_path=self._final_plan_path,
+            started_at=self._require_started_at(),
+        )
+        self._report_path = report_path
+        self._archive_path = archive_path
+        return report_phase_result
 
     # ------------------------------------------------------------------
     # Private — setup helpers
@@ -231,7 +303,14 @@ class PlanWorkflow:
             )
 
         self._workspace.set_task_slug(task_content)
-        self._workspace.ensure_dirs(reuse=False)
+        self._workspace.ensure_dirs(reuse=self._reuse_workspace or self._skip_planning)
+        if self._skip_planning:
+            initial_plan_path = self._workspace.workspace_dir / "initial-plan.md"
+            if not initial_plan_path.exists() or initial_plan_path.stat().st_size == 0:
+                raise ValueError(
+                    "skip_planning requires an existing non-empty initial-plan.md "
+                    "in .plan-workspace/."
+                )
         self._workspace.write_file("task-input.md", task_content)
 
     @staticmethod
@@ -252,93 +331,25 @@ class PlanWorkflow:
     # Private — phase runners
     # ------------------------------------------------------------------
 
-    async def _run_plan_phase(
+    async def _run_parallel_audits(
         self,
-        task_content: str,
-        claude_md: str,
+        agents: list[str],
+        prompt: str,
+        round: int,
     ) -> PhaseResult:
-        """Run the initial planning phase; produces initial-plan.md."""
-        prompt = build_plan_prompt(
-            task_content,
-            claude_md,
-            template_path=self._plan_template_path,
-            base_dir=self._prompt_base_dir,
-        )
-        output_path = self._workspace.workspace_dir / "initial-plan.md"
-        planner_config = self._registry.get(self._planner)
-        return await self._phase_runner.run_phase(
-            "plan",
-            planner_config,
-            prompt,
-            output_path,
-            self._dry_run,
-        )
-
-    async def _run_audit_phase(
-        self,
-        round_num: int,
-        phase_name: str,
-        plan_content: str,
-        task_content: str,
-        claude_md: str,
-        prior_audits: dict[str, str] | None,
-    ) -> PhaseResult:
-        """Run parallel audit phase for the given round."""
-        if not self._auditors:
-            return PhaseResult(
-                name=phase_name,
-                status=PhaseStatus.SKIPPED,
-            )
-
-        prompt = build_audit_prompt(
-            round=round_num,
-            plan_content=plan_content,
-            task_content=task_content,
-            claude_md=claude_md,
-            prior_audits=prior_audits,
-            template_path=self._audit_template_path,
-            base_dir=self._prompt_base_dir,
-        )
-
-        agents = [
+        """Run multiple auditors in parallel for a single audit round."""
+        phase_name = self._audit_phase_name(round)
+        work_items = [
             (
                 self._registry.get(auditor),
                 prompt,
-                self._audit_output_path(auditor, round_num),
+                self._audit_output_path(auditor, round),
             )
-            for auditor in self._auditors
+            for auditor in agents
         ]
-
-        return await self._phase_runner.run_parallel(phase_name, agents, self._dry_run)
-
-    async def _run_refine_phase(
-        self,
-        round_num: int,
-        phase_name: str,
-        plan_content: str,
-        task_content: str,
-        claude_md: str,
-        audit_reports: dict[str, str],
-        prior_audits: dict[str, str] | None,
-    ) -> PhaseResult:
-        """Run the refinement phase incorporating audit feedback."""
-        prompt = build_refinement_prompt(
-            round=round_num,
-            plan_content=plan_content,
-            task_content=task_content,
-            claude_md=claude_md,
-            audit_reports=audit_reports,
-            prior_audits=prior_audits,
-            template_path=self._refine_template_path,
-            base_dir=self._prompt_base_dir,
-        )
-        output_path = self._workspace.workspace_dir / "final-plan.md"
-        planner_config = self._registry.get(self._planner)
-        return await self._phase_runner.run_phase(
+        return await self._phase_runner.run_parallel(
             phase_name,
-            planner_config,
-            prompt,
-            output_path,
+            work_items,
             self._dry_run,
         )
 
@@ -422,6 +433,13 @@ class PlanWorkflow:
         """Write plan_content to final-plan.md (fallback when refine fails)."""
         self._workspace.write_file("final-plan.md", plan_content)
 
+    def _current_plan_content(self) -> str:
+        """Return the latest available plan text for audit/refine inputs."""
+        plan_content = self._workspace.read_file("final-plan.md")
+        if plan_content is not None:
+            return plan_content
+        return self._workspace.read_file("initial-plan.md") or ""
+
     def _resolve_final_plan_path(self) -> Path | None:
         """Return path to final-plan.md if it exists, else initial-plan.md."""
         final = self._workspace.workspace_dir / "final-plan.md"
@@ -435,6 +453,55 @@ class PlanWorkflow:
     # ------------------------------------------------------------------
     # Private — result construction
     # ------------------------------------------------------------------
+
+    def _reset_run_state(self, *, task_content: str, started_at: datetime) -> None:
+        """Reset per-run state before entering the workflow pipeline."""
+        self._started_at = started_at
+        self._task_content = task_content
+        self._claude_md = self._read_claude_md()
+        self._phases = []
+        self._agent_results = {}
+        self._prior_audits = {}
+        self._round_audit_reports = {}
+        self._report_path = None
+        self._archive_path = None
+        self._final_plan_path = None
+
+    def _build_skipped_plan_phase(self) -> PhaseResult:
+        """Return a skipped plan phase that preserves the existing initial plan."""
+        initial_plan_path = self._workspace.workspace_dir / "initial-plan.md"
+        return PhaseResult(
+            name="plan",
+            status=PhaseStatus.SKIPPED,
+            output_files=[initial_plan_path],
+        )
+
+    def _record_phase_result(self, phase: PhaseResult) -> None:
+        """Append a phase result and mirror its agent outputs in the run summary."""
+        self._phases.append(phase)
+        self._agent_results[phase.name] = list(phase.agent_results)
+
+    @staticmethod
+    def _audit_phase_name(round_num: int) -> str:
+        """Return the audit phase name for the given round."""
+        return "audit" if round_num == 1 else f"audit-r{round_num}"
+
+    @staticmethod
+    def _refine_phase_name(round_num: int) -> str:
+        """Return the refine phase name for the given round."""
+        return "refine" if round_num == 1 else f"refine-r{round_num}"
+
+    def _require_started_at(self) -> datetime:
+        """Return the run start time or raise if the workflow is uninitialized."""
+        if self._started_at is None:
+            raise RuntimeError("PlanWorkflow has not been initialized for a run.")
+        return self._started_at
+
+    def _require_task_content(self) -> str:
+        """Return the task content or raise if the workflow is uninitialized."""
+        if self._task_content is None:
+            raise RuntimeError("PlanWorkflow has not been initialized for a run.")
+        return self._task_content
 
     @staticmethod
     def _sum_phase_costs(phases: list[PhaseResult]) -> Decimal | None:

@@ -28,6 +28,19 @@ def parse_auditor_csv(csv_input: str) -> list[str]:
     return result
 
 
+def _require_existing_initial_plan(root: Path) -> None:
+    """Exit with a clear error when skip-planning has no reusable plan file."""
+    initial_plan = root / ".plan-workspace" / "initial-plan.md"
+    if initial_plan.exists() and initial_plan.stat().st_size > 0:
+        return
+
+    console.print(
+        "[red]--skip-planning requires an existing non-empty "
+        ".plan-workspace/initial-plan.md[/red]"
+    )
+    raise typer.Exit(1)
+
+
 def _option_was_supplied(ctx: typer.Context, name: str) -> bool:
     """Return True when an option came from the command line instead of its default."""
     return ctx.get_parameter_source(name) != ParameterSource.DEFAULT
@@ -120,7 +133,6 @@ def plan_run(
     ] = None,
 ) -> None:
     """Run multi-agent implementation planning."""
-    _ = skip_planning
 
     # 1. Resolve input mode
     mode = _resolve_input_mode(task, task_file, interactive, tui)
@@ -205,7 +217,12 @@ def plan_run(
     if skip_audit:
         auditor_list = []
     effective_rounds = 0 if skip_refinement else resolved_audit_rounds
+    if skip_planning:
+        _require_existing_initial_plan(root)
 
+    # 6. Configure prompt templates and shared dependencies
+    from planora.agents.registry import AgentRegistry
+    from planora.agents.runner import AgentRunner
     from planora.prompts.plan import configure_prompt_templates
 
     configure_prompt_templates(
@@ -214,8 +231,18 @@ def plan_run(
         refine=settings.prompts.refine,
         base_dir=settings.effective_prompt_base_dir,
     )
+    registry = AgentRegistry.from_settings(settings)
+    runner = AgentRunner()
 
-    # 6. TUI mode — optional extra; fall back gracefully
+    # 7. Fail fast: validate planner binary before creating workspace
+    missing = registry.validate([resolved_planner])
+    if missing:
+        console.print(
+            f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]"
+        )
+        raise typer.Exit(1)
+
+    # 8. TUI mode — optional extra; fall back gracefully
     if mode == "tui":
         try:
             from planora.tui.app import PlanoraTUI
@@ -226,6 +253,13 @@ def plan_run(
                 auditors=auditor_list,
                 audit_rounds=effective_rounds,
                 max_concurrency=resolved_concurrency,
+                project_root=root,
+                registry=registry,
+                runner=runner,
+                plan_template_path=settings.prompts.plan,
+                audit_template_path=settings.prompts.audit,
+                refine_template_path=settings.prompts.refine,
+                prompt_base_dir=settings.effective_prompt_base_dir,
             ).run()
             return
         except ImportError:
@@ -235,40 +269,31 @@ def plan_run(
             )
             console.print("Falling back to CLI mode.")
 
-    # 7. Lazy imports — keep module-level startup fast, avoid circular imports
-    from planora.agents.registry import AgentRegistry
-    from planora.agents.runner import AgentRunner
+    # 9. Lazy imports — keep module-level startup fast, avoid circular imports
     from planora.cli.callbacks import CLICallback, EventsOutputCallback
     from planora.core.events import PhaseStatus
     from planora.core.workspace import WorkspaceManager
     from planora.workflow.plan import PlanWorkflow
 
-    registry = AgentRegistry.from_settings(settings)
-
-    # 8. Fail fast: validate planner binary before creating workspace
-    missing = registry.validate([resolved_planner])
-    if missing:
-        console.print(
-            f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]"
-        )
-        raise typer.Exit(1)
-
-    # 9. Choose UI callback based on output format
+    # 10. Choose UI callback based on output format
     ui: CLICallback | EventsOutputCallback
     ui = EventsOutputCallback() if output_format == "events" else CLICallback()
 
-    # 10. Build and run the workflow
+    # 11. Build and run the workflow
     workspace = WorkspaceManager(root)
     workflow = PlanWorkflow(
         workspace=workspace,
         registry=registry,
-        runner=AgentRunner(),
+        runner=runner,
         ui=ui,
         planner=resolved_planner,
         auditors=auditor_list,
         audit_rounds=effective_rounds,
         max_concurrency=resolved_concurrency,
         dry_run=dry_run,
+        skip_planning=skip_planning,
+        reuse_workspace=skip_planning,
+        snapshot_interval=settings.effective_cli_status_interval,
         plan_template_path=settings.prompts.plan,
         audit_template_path=settings.prompts.audit,
         refine_template_path=settings.prompts.refine,
@@ -387,9 +412,8 @@ def plan_resume(
     ui: CLICallback | EventsOutputCallback
     ui = EventsOutputCallback() if output_format == "events" else CLICallback()
 
-    # 9. Run workflow — preflight will wipe and recreate workspace,
-    #    which is acceptable: resume value is reading the saved task and
-    #    re-running from the detected phase.
+    # 9. Run workflow against the existing workspace, preserving completed
+    #    plan artifacts when resuming from a later phase.
     workspace = WorkspaceManager(root)
     workflow = PlanWorkflow(
         workspace=workspace,
@@ -400,6 +424,9 @@ def plan_resume(
         auditors=effective_auditors,
         audit_rounds=effective_rounds,
         dry_run=False,
+        skip_planning=has_initial,
+        reuse_workspace=has_initial,
+        snapshot_interval=settings.effective_cli_status_interval,
         plan_template_path=settings.prompts.plan,
         audit_template_path=settings.prompts.audit,
         refine_template_path=settings.prompts.refine,
