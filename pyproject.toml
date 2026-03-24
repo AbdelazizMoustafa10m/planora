@@ -1,0 +1,42 @@
+[project]
+name = "planora"
+version = "0.1.0"
+description = "Multi-agent implementation plan orchestrator"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.13",
+    "rich>=13.0",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+]
+
+[project.scripts]
+planora = "planora.cli.app:app"
+
+[project.optional-dependencies]
+tui = ["textual>=8.1", "textual-speedups>=0.1", "trogon>=0.6"]
+telemetry = ["opentelemetry-api>=1.29", "opentelemetry-sdk>=1.29"]
+dev = ["textual-dev>=1.7", "pytest>=8.0", "mypy>=1.13", "ruff>=0.8"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TCH"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/planora"]

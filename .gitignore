@@ -5,18 +5,21 @@ docs/
 .claude/
 .codex/
 
-# macOS
+# OS
 .DS_Store
+Thumbs.db
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 *.egg-info/
+*.egg
 dist/
 build/
-*.egg
 .eggs/
+*.whl
 
 # Virtual environments
 .venv/
@@ -35,6 +38,7 @@ reports/
 .vscode/
 *.swp
 *.swo
+*~
 
 # Testing
 .coverage
@@ -42,3 +46,6 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Distribution
+*.tar.gz
