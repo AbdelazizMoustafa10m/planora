@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from jinja2 import FileSystemLoader, StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
+
 from planora.prompts.contracts import (
     AuditCategory,
     AuditSeverity,
@@ -9,6 +17,19 @@ from planora.prompts.contracts import (
     PlanPhase,
     PlanSection,
 )
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class _TemplateConfig:
+    plan: Path | None = None
+    audit: Path | None = None
+    refine: Path | None = None
+    base_dir: Path = Path(".")
+
+
+_ACTIVE_TEMPLATE_CONFIG: _TemplateConfig | None = None
 
 # ---------------------------------------------------------------------------
 # Dynamic lists derived from enum members — built once at module load time
@@ -57,11 +78,216 @@ _CATEGORY_DESCRIPTIONS: str = (
 
 
 # ---------------------------------------------------------------------------
+# Jinja2 template helpers
+# ---------------------------------------------------------------------------
+
+
+def _create_jinja_env(template_dir: Path) -> SandboxedEnvironment:
+    """Create a sandboxed Jinja2 environment rooted at the template directory."""
+    return SandboxedEnvironment(
+        loader=FileSystemLoader(str(template_dir)),
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+
+
+def _render_template(template_path: Path, variables: dict[str, Any]) -> str:
+    """Load and render a markdown prompt template."""
+    environment = _create_jinja_env(template_path.parent)
+    template = environment.get_template(template_path.name)
+    return template.render(**variables)
+
+
+def _resolve_template_path(
+    configured_path: Path | None,
+    base_dir: Path,
+    prompt_type: str,
+) -> Path | None:
+    """Resolve a configured template path, warning and falling back if it is missing."""
+    if configured_path is None:
+        return None
+
+    resolved = configured_path
+    if not resolved.is_absolute():
+        resolved = (base_dir / resolved).resolve()
+
+    if resolved.exists():
+        return resolved
+
+    logger.warning(
+        "Prompt template not found: '%s' (configured for %s prompt). "
+        "Falling back to built-in prompt.",
+        resolved,
+        prompt_type,
+    )
+    return None
+
+
+def _base_template_context() -> dict[str, Any]:
+    """Return the structural contract values available to all templates."""
+    return {
+        "plan_sections": [section.value for section in PlanSection],
+        "audit_categories": [category.value for category in AuditCategory],
+        "severity_levels": [severity.value for severity in AuditSeverity],
+    }
+
+
+def configure_prompt_templates(
+    *,
+    plan: Path | None = None,
+    audit: Path | None = None,
+    refine: Path | None = None,
+    base_dir: Path = Path("."),
+) -> None:
+    """Set the active prompt template configuration for this process."""
+    global _ACTIVE_TEMPLATE_CONFIG
+    _ACTIVE_TEMPLATE_CONFIG = _TemplateConfig(
+        plan=plan,
+        audit=audit,
+        refine=refine,
+        base_dir=base_dir,
+    )
+
+
+def reset_prompt_templates() -> None:
+    """Clear any process-local prompt template configuration."""
+    global _ACTIVE_TEMPLATE_CONFIG
+    _ACTIVE_TEMPLATE_CONFIG = None
+
+
+def _current_template_config() -> _TemplateConfig:
+    """Return the active template configuration, falling back to base settings."""
+    if _ACTIVE_TEMPLATE_CONFIG is not None:
+        return _ACTIVE_TEMPLATE_CONFIG
+
+    try:
+        from planora.core.config import PlanораSettings
+
+        settings = PlanораSettings()
+    except Exception:  # noqa: BLE001 - prompt fallback should remain best-effort
+        return _TemplateConfig()
+
+    return _TemplateConfig(
+        plan=settings.prompts.plan,
+        audit=settings.prompts.audit,
+        refine=settings.prompts.refine,
+        base_dir=settings.effective_prompt_base_dir,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public prompt-builder functions
 # ---------------------------------------------------------------------------
 
 
-def build_plan_prompt(task_content: str, claude_md: str) -> str:
+def build_plan_prompt(
+    task_content: str,
+    claude_md: str,
+    *,
+    template_path: Path | None = None,
+    base_dir: Path = Path("."),
+) -> str:
+    """Return the plan prompt, optionally rendering a configured Jinja2 template."""
+    if template_path is None:
+        config = _current_template_config()
+        template_path = config.plan
+        base_dir = config.base_dir
+
+    resolved = _resolve_template_path(template_path, base_dir, "plan")
+    if resolved is not None:
+        return _render_template(
+            resolved,
+            {
+                **_base_template_context(),
+                "task_content": task_content,
+                "claude_md": claude_md,
+            },
+        )
+    return _build_plan_prompt_builtin(task_content, claude_md)
+
+
+def build_audit_prompt(
+    round: int,  # noqa: A002
+    plan_content: str,
+    task_content: str,
+    claude_md: str,
+    prior_audits: dict[str, str] | None = None,
+    *,
+    template_path: Path | None = None,
+    base_dir: Path = Path("."),
+) -> str:
+    """Return the audit prompt, optionally rendering a configured Jinja2 template."""
+    if template_path is None:
+        config = _current_template_config()
+        template_path = config.audit
+        base_dir = config.base_dir
+
+    resolved = _resolve_template_path(template_path, base_dir, "audit")
+    if resolved is not None:
+        return _render_template(
+            resolved,
+            {
+                **_base_template_context(),
+                "round": round,
+                "plan_content": plan_content,
+                "task_content": task_content,
+                "claude_md": claude_md,
+                "prior_audits": prior_audits,
+            },
+        )
+    return _build_audit_prompt_builtin(
+        round,
+        plan_content,
+        task_content,
+        claude_md,
+        prior_audits,
+    )
+
+
+def build_refinement_prompt(
+    round: int,  # noqa: A002
+    plan_content: str,
+    task_content: str,
+    claude_md: str,
+    audit_reports: dict[str, str],
+    prior_audits: dict[str, str] | None = None,
+    *,
+    template_path: Path | None = None,
+    base_dir: Path = Path("."),
+) -> str:
+    """Return the refinement prompt, optionally rendering a configured Jinja2 template."""
+    if template_path is None:
+        config = _current_template_config()
+        template_path = config.refine
+        base_dir = config.base_dir
+
+    resolved = _resolve_template_path(template_path, base_dir, "refine")
+    if resolved is not None:
+        return _render_template(
+            resolved,
+            {
+                **_base_template_context(),
+                "round": round,
+                "plan_content": plan_content,
+                "task_content": task_content,
+                "claude_md": claude_md,
+                "audit_reports": audit_reports,
+                "prior_audits": prior_audits,
+            },
+        )
+    return _build_refinement_prompt_builtin(
+        round,
+        plan_content,
+        task_content,
+        claude_md,
+        audit_reports,
+        prior_audits,
+    )
+
+
+def _build_plan_prompt_builtin(task_content: str, claude_md: str) -> str:
     """Return a self-contained system prompt for the plan-generation agent.
 
     The prompt instructs the agent to follow a 4-phase workflow
@@ -271,7 +497,7 @@ look them up with Exa MCP tools.
 """
 
 
-def build_audit_prompt(
+def _build_audit_prompt_builtin(
     round: int,  # noqa: A002
     plan_content: str,
     task_content: str,
@@ -456,7 +682,7 @@ acceptable. Cite the exact step, section, or omission.
 """
 
 
-def build_refinement_prompt(
+def _build_refinement_prompt_builtin(
     round: int,  # noqa: A002
     plan_content: str,
     task_content: str,

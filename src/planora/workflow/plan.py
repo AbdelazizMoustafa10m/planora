@@ -48,6 +48,10 @@ class PlanWorkflow:
         audit_rounds: int = 1,
         max_concurrency: int = 3,
         dry_run: bool = False,
+        plan_template_path: Path | None = None,
+        audit_template_path: Path | None = None,
+        refine_template_path: Path | None = None,
+        prompt_base_dir: Path = Path("."),
     ) -> None:
         self._workspace = workspace
         self._registry = registry
@@ -57,6 +61,10 @@ class PlanWorkflow:
         self._audit_rounds = audit_rounds
         self._max_concurrency = max_concurrency
         self._dry_run = dry_run
+        self._plan_template_path = plan_template_path
+        self._audit_template_path = audit_template_path
+        self._refine_template_path = refine_template_path
+        self._prompt_base_dir = prompt_base_dir
         self._phase_runner = PhaseRunner(runner, ui, max_concurrency)
 
     # ------------------------------------------------------------------
@@ -250,7 +258,12 @@ class PlanWorkflow:
         claude_md: str,
     ) -> PhaseResult:
         """Run the initial planning phase; produces initial-plan.md."""
-        prompt = build_plan_prompt(task_content, claude_md)
+        prompt = build_plan_prompt(
+            task_content,
+            claude_md,
+            template_path=self._plan_template_path,
+            base_dir=self._prompt_base_dir,
+        )
         output_path = self._workspace.workspace_dir / "initial-plan.md"
         planner_config = self._registry.get(self._planner)
         return await self._phase_runner.run_phase(
@@ -283,6 +296,8 @@ class PlanWorkflow:
             task_content=task_content,
             claude_md=claude_md,
             prior_audits=prior_audits,
+            template_path=self._audit_template_path,
+            base_dir=self._prompt_base_dir,
         )
 
         agents = [
@@ -314,6 +329,8 @@ class PlanWorkflow:
             claude_md=claude_md,
             audit_reports=audit_reports,
             prior_audits=prior_audits,
+            template_path=self._refine_template_path,
+            base_dir=self._prompt_base_dir,
         )
         output_path = self._workspace.workspace_dir / "final-plan.md"
         planner_config = self._registry.get(self._planner)

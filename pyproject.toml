@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Multi-agent implementation plan orchestrator"
 requires-python = ">=3.12"
 dependencies = [
+    "jinja2>=3.1",
     "typer>=0.13",
     "rich>=13.0",
     "pydantic>=2.10",
@@ -16,7 +17,13 @@ planora = "planora.cli.app:app"
 [project.optional-dependencies]
 tui = ["textual>=8.1", "textual-speedups>=0.1", "trogon>=0.6"]
 telemetry = ["opentelemetry-api>=1.29", "opentelemetry-sdk>=1.29"]
-dev = ["textual-dev>=1.7", "pytest>=8.0", "mypy>=1.13", "ruff>=0.8"]
+dev = [
+    "textual-dev>=1.7",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
 
 [tool.ruff]
 target-version = "py312"

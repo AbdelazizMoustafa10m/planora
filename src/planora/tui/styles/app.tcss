@@ -1,0 +1,154 @@
+Screen {
+    layout: vertical;
+    background: $surface;
+}
+
+Header {
+    dock: top;
+}
+
+Footer {
+    dock: bottom;
+}
+
+#run-summary {
+    height: auto;
+    margin: 1 1 0 1;
+    padding: 1 2;
+    border: round $primary;
+    background: $surface;
+}
+
+#pipeline-progress {
+    height: 3;
+    margin: 1 1 0 1;
+    padding: 0 2;
+    border: round $primary;
+    background: $surface;
+}
+
+#dashboard-main {
+    height: 1fr;
+    margin: 1 1 0 1;
+}
+
+#left-panel {
+    width: 2fr;
+    padding-right: 1;
+}
+
+#right-panel {
+    width: 1fr;
+    min-width: 32;
+}
+
+#agent-activity,
+#agent-output,
+#status-panel,
+#cost-tracker,
+#event-log,
+#wizard-container,
+#report-viewer {
+    border: round $primary;
+    background: $surface;
+}
+
+#agent-activity {
+    height: 2fr;
+    padding: 1;
+    overflow-y: auto;
+}
+
+#agent-output {
+    height: 1fr;
+    margin-top: 1;
+}
+
+#status-panel {
+    height: 2fr;
+    padding: 1;
+}
+
+#cost-tracker {
+    height: auto;
+    min-height: 10;
+    margin-top: 1;
+    padding: 1;
+}
+
+#event-log {
+    height: 12;
+    margin: 1;
+    padding: 0 1;
+}
+
+#event-log.hidden {
+    display: none;
+}
+
+WizardScreen {
+    align: center middle;
+    background: $surface 80%;
+}
+
+#wizard-container {
+    width: 84;
+    max-width: 90%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+}
+
+#wizard-title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+#wizard-subtitle {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#task-input {
+    height: 10;
+    margin-bottom: 1;
+}
+
+#auditors-input,
+#planner-select,
+#rounds-select,
+#concurrency-select {
+    width: 1fr;
+}
+
+#wizard-select-row {
+    height: auto;
+    margin-top: 1;
+}
+
+.wizard-select-group {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#wizard-error {
+    color: $error;
+    min-height: 1;
+    margin-top: 1;
+}
+
+#wizard-actions {
+    height: auto;
+    align-horizontal: right;
+    margin-top: 1;
+}
+
+ReportScreen {
+    layout: vertical;
+}
+
+#report-viewer {
+    height: 1fr;
+    margin: 1;
+    padding: 1 2;
+}

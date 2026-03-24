@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 from typing import Annotated
 
 import typer
+from click.core import ParameterSource
 from rich.console import Console
 from rich.prompt import Prompt
 
 from planora.cli.app import plan_app
+from planora.core.config import PlanораSettings
 
 console = Console()
 
@@ -24,6 +26,11 @@ def parse_auditor_csv(csv_input: str) -> list[str]:
             seen.add(name)
             result.append(name)
     return result
+
+
+def _option_was_supplied(ctx: typer.Context, name: str) -> bool:
+    """Return True when an option came from the command line instead of its default."""
+    return ctx.get_parameter_source(name) != ParameterSource.DEFAULT
 
 
 def _resolve_input_mode(
@@ -62,6 +69,7 @@ def _resolve_input_mode(
 
 @plan_app.command("run")
 def plan_run(
+    ctx: typer.Context,
     task: Annotated[str | None, typer.Argument(help="Task description")] = None,
     task_file: Annotated[
         Path | None, typer.Option(help="Read task from file")
@@ -102,33 +110,29 @@ def plan_run(
     deep_timeout: Annotated[
         float, typer.Option(help="Override deep tool stall threshold (seconds)")
     ] = 600.0,
+    profile: Annotated[
+        str | None,
+        typer.Option(help="Activate named profile from planora.toml"),
+    ] = None,
+    config: Annotated[
+        list[str] | None,
+        typer.Option(help="Override config key=value (TOML syntax, dot notation)"),
+    ] = None,
 ) -> None:
     """Run multi-agent implementation planning."""
-    # Suppress unused-parameter warnings for options forwarded to the workflow engine
-    _ = skip_planning, stall_timeout, deep_timeout
+    _ = skip_planning
 
     # 1. Resolve input mode
     mode = _resolve_input_mode(task, task_file, interactive, tui)
 
-    # 2. TUI mode — optional extra; fall back gracefully
-    if mode == "tui":
-        try:
-            from planora.tui.app import PlanoraTUI  # type: ignore[import-untyped]
-
-            PlanoraTUI().run()
-            return
-        except ImportError:
-            console.print("[yellow]Warning:[/] TUI not available, falling back to CLI")
-            mode = "wizard" if (task is None and task_file is None) else "run"
-
-    # 3. Wizard mode: prompt for task interactively
+    # 2. Wizard mode: prompt for task interactively
     if mode == "wizard":
         task = Prompt.ask("[bold]Enter task description[/bold]")
         if not task:
             console.print("[red]No task provided[/red]")
             raise typer.Exit(1)
 
-    # 4. Resolve task content from the first available source
+    # 3. Resolve task content from the first available source
     task_content: str
     if task is not None:
         task_content = task
@@ -148,14 +152,88 @@ def plan_run(
         console.print("[red]Task content is empty[/red]")
         raise typer.Exit(1)
 
+    # 4. Load and resolve configuration layers
+    try:
+        settings = PlanораSettings()
+        if profile is not None:
+            settings = settings.with_profile(profile)
+        if config:
+            settings = settings.with_config_overrides(config)
+        cli_config_overrides: list[str] = []
+        if _option_was_supplied(ctx, "stall_timeout"):
+            cli_config_overrides.append(
+                f"observability.stall_timeout={stall_timeout}"
+            )
+        if _option_was_supplied(ctx, "deep_timeout"):
+            cli_config_overrides.append(
+                f"observability.deep_tool_timeout={deep_timeout}"
+            )
+        if cli_config_overrides:
+            settings = settings.with_config_overrides(cli_config_overrides)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    resolved_planner = (
+        planner if _option_was_supplied(ctx, "planner") else settings.effective_planner
+    )
+    resolved_auditors = (
+        parse_auditor_csv(auditors)
+        if _option_was_supplied(ctx, "auditors")
+        else settings.effective_auditors
+    )
+    resolved_audit_rounds = (
+        audit_rounds
+        if _option_was_supplied(ctx, "audit_rounds")
+        else settings.effective_audit_rounds
+    )
+    resolved_concurrency = (
+        concurrency
+        if _option_was_supplied(ctx, "concurrency")
+        else settings.effective_concurrency
+    )
+
+    root_setting = (
+        project_root.resolve()
+        if _option_was_supplied(ctx, "project_root") and project_root is not None
+        else settings.effective_project_root
+    )
+    root = root_setting
+
     # 5. Parse and apply skip flags
-    auditor_list = parse_auditor_csv(auditors)
+    auditor_list = list(resolved_auditors)
     if skip_audit:
         auditor_list = []
-    effective_rounds = 0 if skip_refinement else audit_rounds
+    effective_rounds = 0 if skip_refinement else resolved_audit_rounds
 
-    # 6. Resolve root directory
-    root = project_root if project_root is not None else Path.cwd()
+    from planora.prompts.plan import configure_prompt_templates
+
+    configure_prompt_templates(
+        plan=settings.prompts.plan,
+        audit=settings.prompts.audit,
+        refine=settings.prompts.refine,
+        base_dir=settings.effective_prompt_base_dir,
+    )
+
+    # 6. TUI mode — optional extra; fall back gracefully
+    if mode == "tui":
+        try:
+            from planora.tui.app import PlanoraTUI
+
+            PlanoraTUI(
+                task_input=task_content,
+                planner=resolved_planner,
+                auditors=auditor_list,
+                audit_rounds=effective_rounds,
+                max_concurrency=resolved_concurrency,
+            ).run()
+            return
+        except ImportError:
+            console.print(
+                "[yellow]Warning:[/] TUI mode requires the 'tui' extra. "
+                "Install with: uv pip install 'planora[tui]'"
+            )
+            console.print("Falling back to CLI mode.")
 
     # 7. Lazy imports — keep module-level startup fast, avoid circular imports
     from planora.agents.registry import AgentRegistry
@@ -165,13 +243,13 @@ def plan_run(
     from planora.core.workspace import WorkspaceManager
     from planora.workflow.plan import PlanWorkflow
 
-    registry = AgentRegistry()
+    registry = AgentRegistry.from_settings(settings)
 
     # 8. Fail fast: validate planner binary before creating workspace
-    missing = registry.validate([planner])
+    missing = registry.validate([resolved_planner])
     if missing:
         console.print(
-            f"[red]Planner '{planner}' not available (binary not on PATH)[/red]"
+            f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]"
         )
         raise typer.Exit(1)
 
@@ -186,11 +264,15 @@ def plan_run(
         registry=registry,
         runner=AgentRunner(),
         ui=ui,
-        planner=planner,
+        planner=resolved_planner,
         auditors=auditor_list,
         audit_rounds=effective_rounds,
-        max_concurrency=concurrency,
+        max_concurrency=resolved_concurrency,
         dry_run=dry_run,
+        plan_template_path=settings.prompts.plan,
+        audit_template_path=settings.prompts.audit,
+        refine_template_path=settings.prompts.refine,
+        prompt_base_dir=settings.effective_prompt_base_dir,
     )
 
     result = asyncio.run(workflow.run(task_content))
@@ -226,7 +308,8 @@ def plan_resume(
     """Resume an interrupted plan run from the existing workspace."""
     _ = tui  # tui flag reserved for future use
 
-    root = project_root if project_root is not None else Path.cwd()
+    settings = PlanораSettings()
+    root = project_root.resolve() if project_root is not None else settings.effective_project_root
     workspace_dir = root / ".plan-workspace"
 
     # 1. Workspace must exist
@@ -280,10 +363,11 @@ def plan_resume(
     from planora.agents.runner import AgentRunner
     from planora.cli.callbacks import CLICallback, EventsOutputCallback
     from planora.core.workspace import WorkspaceManager
+    from planora.prompts.plan import configure_prompt_templates
     from planora.workflow.plan import PlanWorkflow
 
     # 7. Effective workflow parameters derived from state detection
-    effective_auditors = auditor_names if auditor_names else ["gemini", "codex"]
+    effective_auditors = auditor_names if auditor_names else settings.effective_auditors
     has_r2_audits = any(workspace_dir.glob("audit-*-r2.md"))
     effective_rounds = 2 if has_r2_audits else 1
 
@@ -291,6 +375,13 @@ def plan_resume(
     if has_final:
         effective_auditors = []
         effective_rounds = 0
+
+    configure_prompt_templates(
+        plan=settings.prompts.plan,
+        audit=settings.prompts.audit,
+        refine=settings.prompts.refine,
+        base_dir=settings.effective_prompt_base_dir,
+    )
 
     # 8. Choose UI callback
     ui: CLICallback | EventsOutputCallback
@@ -302,13 +393,17 @@ def plan_resume(
     workspace = WorkspaceManager(root)
     workflow = PlanWorkflow(
         workspace=workspace,
-        registry=AgentRegistry(),
+        registry=AgentRegistry.from_settings(settings),
         runner=AgentRunner(),
         ui=ui,
-        planner="claude",
+        planner=settings.effective_planner,
         auditors=effective_auditors,
         audit_rounds=effective_rounds,
         dry_run=False,
+        plan_template_path=settings.prompts.plan,
+        audit_template_path=settings.prompts.audit,
+        refine_template_path=settings.prompts.refine,
+        prompt_base_dir=settings.effective_prompt_base_dir,
     )
 
     result = asyncio.run(workflow.run(task_content))

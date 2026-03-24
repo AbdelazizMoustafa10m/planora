@@ -14,7 +14,7 @@ app.add_typer(agents_app, name="agents")
 def launch_tui() -> None:
     """Launch interactive TUI (auto-generated from CLI)."""
     try:
-        from trogon import Trogon  # type: ignore[import-not-found]
+        from trogon import Trogon  # type: ignore[import-untyped]
 
         Trogon(app).run()
     except ImportError:
