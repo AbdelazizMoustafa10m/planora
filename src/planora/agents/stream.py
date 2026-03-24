@@ -236,7 +236,7 @@ class StreamParser:
             events.append(
                 StreamEvent(
                     event_type=StreamEventType.SUBAGENT,
-                    text_preview=f'Subagent: {subagent_desc}' if subagent_desc else "Subagent",
+                    text_preview=f"Subagent: {subagent_desc}" if subagent_desc else "Subagent",
                     raw=data,
                 )
             )
@@ -375,9 +375,7 @@ class StreamParser:
             token_usage: dict[str, int] | None = None
             if isinstance(usage, dict):
                 token_usage = {
-                    k: int(v)
-                    for k, v in usage.items()
-                    if isinstance(v, (int, float))
+                    k: int(v) for k, v in usage.items() if isinstance(v, (int, float))
                 } or None
             return [
                 StreamEvent(
@@ -454,9 +452,7 @@ class StreamParser:
             return events
 
         # Text/message chunk
-        text_val = _str_or_none(
-            data.get("text") or data.get("message") or data.get("content")
-        )
+        text_val = _str_or_none(data.get("text") or data.get("message") or data.get("content"))
         if text_val:
             events.append(
                 StreamEvent(
@@ -585,7 +581,7 @@ class StreamParser:
                         events.append(
                             StreamEvent(
                                 event_type=StreamEventType.SUBAGENT,
-                                text_preview=f'Subagent: {desc}' if desc else "Subagent",
+                                text_preview=f"Subagent: {desc}" if desc else "Subagent",
                                 raw=data,
                             )
                         )
@@ -594,9 +590,7 @@ class StreamParser:
         # Issue 4.1: functionResponse signals tool execution completion → STATE_CHANGE
         if "functionResponse" in data or "tool_response" in data:
             response = data.get("functionResponse") or data.get("tool_response")
-            response_dict: dict[str, Any] | None = (
-                response if isinstance(response, dict) else None
-            )
+            response_dict: dict[str, Any] | None = response if isinstance(response, dict) else None
             tool_name_resp = _str_or_none(response_dict.get("name")) if response_dict else None
             events.append(
                 StreamEvent(

@@ -45,9 +45,7 @@ class PlanoraTelemetry:
                         else "opentelemetry.exporter.otlp.proto.http.trace_exporter"
                     )
                     exporter_module = importlib.import_module(exporter_path)
-                    export_module = importlib.import_module(
-                        "opentelemetry.sdk.trace.export"
-                    )
+                    export_module = importlib.import_module("opentelemetry.sdk.trace.export")
                     exporter = exporter_module.OTLPSpanExporter(endpoint=endpoint)
                     processor = export_module.BatchSpanProcessor(exporter)
                     provider.add_span_processor(processor)
@@ -64,6 +62,23 @@ class PlanoraTelemetry:
             self._enabled = False
             self._trace_api = None
             self._tracer = None
+
+    @contextmanager
+    def pipeline_span(self, task_slug: str) -> Iterator[Any | None]:
+        """Create a root span for the entire planning pipeline."""
+        if not self._enabled or self._tracer is None:
+            yield None
+            return
+
+        attributes = {
+            "planora.pipeline": "plan",
+            "planora.task_slug": task_slug,
+        }
+        with self._tracer.start_as_current_span(
+            "planora.pipeline",
+            attributes=attributes,
+        ) as span:
+            yield span
 
     @contextmanager
     def phase_span(self, phase: str, agent: str | None = None) -> Iterator[Any | None]:

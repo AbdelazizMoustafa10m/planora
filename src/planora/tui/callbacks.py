@@ -17,6 +17,7 @@ from planora.core.events import (
     StreamEvent,
     StreamEventType,
     ToolExecution,
+    UICallback,
 )
 
 if TYPE_CHECKING:
@@ -140,7 +141,7 @@ class PipelineUpdated(Message, bubble=False, namespace="planora"):
         super().__init__()
 
 
-class TextualUICallback:
+class TextualUICallback(UICallback):
     """UICallback implementation that posts thread-safe Textual messages."""
 
     def __init__(self, app: PlanoraTUI) -> None:
@@ -199,9 +200,7 @@ class TextualUICallback:
         else:
             snapshot = existing.model_copy(
                 update={
-                    "state": AgentState.COMPLETED
-                    if result.exit_code == 0
-                    else AgentState.FAILED,
+                    "state": AgentState.COMPLETED if result.exit_code == 0 else AgentState.FAILED,
                     "elapsed": result.duration,
                     "active_tools": [],
                     "cost_usd": result.cost_usd
@@ -270,9 +269,7 @@ class TextualUICallback:
             tool_detail=tool.detail,
             tool_status=tool.status,
             tool_duration_ms=(
-                int(tool.duration.total_seconds() * 1000)
-                if tool.duration is not None
-                else None
+                int(tool.duration.total_seconds() * 1000) if tool.duration is not None else None
             ),
         )
         self._update_monitor(agent, event)
@@ -299,9 +296,7 @@ class TextualUICallback:
 
     def on_rate_limit(self, agent: str, retry_after_ms: int | None) -> None:
         retry_after = (
-            f" Retry after {retry_after_ms / 1000:.1f}s."
-            if retry_after_ms is not None
-            else ""
+            f" Retry after {retry_after_ms / 1000:.1f}s." if retry_after_ms is not None else ""
         )
         self._post(
             LogEvent(

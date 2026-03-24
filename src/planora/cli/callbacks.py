@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timedelta
-from decimal import Decimal
-from typing import Any
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from decimal import Decimal
 
 from rich.console import Console
 from rich.panel import Panel
@@ -16,12 +18,12 @@ from planora.core.events import (
     PhaseResult,
     PhaseStatus,
     StreamEvent,
-    StreamEventType,
     ToolExecution,
+    UICallback,
 )
 
 
-class CLICallback:
+class CLICallback(UICallback):
     """UICallback implementation for CLI mode using Rich.
 
     All output is written to stderr to keep stdout clean for pipeline use.
@@ -29,7 +31,7 @@ class CLICallback:
 
     def __init__(self, console: Console | None = None) -> None:
         self._console = console or Console(stderr=True)
-        self._total_cost: Decimal = Decimal(0)
+        self._agent_costs: dict[str, Decimal] = {}
 
     def on_phase_start(self, phase: str, label: str) -> None:
         """Rich panel header with phase name."""
@@ -81,11 +83,10 @@ class CLICallback:
         )
 
     def on_cost_update(self, agent: str, cost_usd: Decimal) -> None:
-        """Print incremental cost update and running total."""
-        self._total_cost += cost_usd
-        self._console.print(
-            f"  [yellow][{agent}][/yellow] Cost: ${cost_usd} (total: ${self._total_cost})"
-        )
+        """Print per-agent cost update and running total across all agents."""
+        self._agent_costs[agent] = cost_usd
+        total = sum(self._agent_costs.values())
+        self._console.print(f"  [yellow][{agent}][/yellow] Cost: ${cost_usd} (total: ${total})")
 
     def on_stall(self, agent: str, idle_seconds: float) -> None:
         """Print stall warning with idle duration."""
@@ -97,15 +98,11 @@ class CLICallback:
     def on_rate_limit(self, agent: str, retry_after_ms: int | None) -> None:
         """Print rate limit warning with optional retry delay."""
         after = f" (retry after {retry_after_ms}ms)" if retry_after_ms else ""
-        self._console.print(
-            f"  [bold yellow][{agent}] \u26a0 Rate limited{after}[/bold yellow]"
-        )
+        self._console.print(f"  [bold yellow][{agent}] \u26a0 Rate limited{after}[/bold yellow]")
 
     def on_retry(self, agent: str, attempt: int, max_retries: int, error: str) -> None:
         """Print retry attempt with error context."""
-        self._console.print(
-            f"  [yellow][{agent}] Retry {attempt}/{max_retries}: {error}[/yellow]"
-        )
+        self._console.print(f"  [yellow][{agent}] Retry {attempt}/{max_retries}: {error}[/yellow]")
 
     def on_snapshot(self, snapshot: AgentMonitorSnapshot) -> None:
         """Status line: [agent] MM:SS | done/running/failed counters | cost | active tool."""
@@ -148,58 +145,8 @@ class CLICallback:
         parts = [f"{phase}: {status.value}" for phase, status in statuses.items()]
         self._console.print(f"  [dim]Pipeline: {' | '.join(parts)}[/dim]")
 
-    def dispatch_agent_event(self, agent: str, event: StreamEvent) -> None:
-        """Route StreamEvent to the appropriate typed callback method."""
-        match event.event_type:
-            case StreamEventType.TOOL_START:
-                tool = ToolExecution(
-                    tool_id=event.tool_id or "",
-                    name=event.tool_name or "unknown",
-                    friendly_name=event.tool_name or "unknown",
-                    detail=event.tool_detail,
-                    started_at=event.timestamp,
-                )
-                self.on_tool_start(agent, tool)
-            case StreamEventType.TOOL_DONE:
-                duration = (
-                    timedelta(milliseconds=event.tool_duration_ms)
-                    if event.tool_duration_ms
-                    else None
-                )
-                tool = ToolExecution(
-                    tool_id=event.tool_id or "",
-                    name=event.tool_name or "unknown",
-                    friendly_name=event.tool_name or "unknown",
-                    detail=event.tool_detail,
-                    started_at=event.timestamp,
-                    completed_at=event.timestamp,
-                    status=event.tool_status or "done",
-                    duration=duration,
-                )
-                self.on_tool_done(agent, tool)
-            case StreamEventType.STATE_CHANGE:
-                # STATE_CHANGE events carry state in error_category field per convention;
-                # no direct mapping available on StreamEvent — silently skip.
-                pass
-            case StreamEventType.RESULT:
-                if event.cost_usd is not None:
-                    self.on_cost_update(agent, event.cost_usd)
-            case StreamEventType.STALL:
-                self.on_stall(agent, 0.0)
-            case StreamEventType.RATE_LIMIT:
-                self.on_rate_limit(agent, event.retry_delay_ms)
-            case StreamEventType.RETRY:
-                self.on_retry(
-                    agent,
-                    event.retry_attempt or 0,
-                    event.retry_max or 0,
-                    event.error_category or "",
-                )
-            case _:
-                pass
 
-
-class EventsOutputCallback:
+class EventsOutputCallback(UICallback):
     """UICallback implementation for headless/CI mode.
 
     Every method serializes its data as a JSONL line to stderr.
@@ -273,9 +220,7 @@ class EventsOutputCallback:
                 "tool": tool.name,
                 "tool_id": tool.tool_id,
                 "detail": tool.detail,
-                "duration_ms": int(tool.duration.total_seconds() * 1000)
-                if tool.duration
-                else None,
+                "duration_ms": int(tool.duration.total_seconds() * 1000) if tool.duration else None,
                 "status": tool.status,
             }
         )

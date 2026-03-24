@@ -1,11 +1,11 @@
-# ruff: noqa: UP042
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class PlanSection(str, Enum):
+class PlanSection(StrEnum):
     """12 required sections in the plan output format."""
+
     OVERVIEW = "Overview"
     CRITICAL_FILES = "Critical Files"
     ARCHITECTURE = "Architecture & Design"
@@ -20,8 +20,9 @@ class PlanSection(str, Enum):
     DOCUMENTATION = "Documentation References"
 
 
-class AuditCategory(str, Enum):
+class AuditCategory(StrEnum):
     """10 audit categories from build_audit_prompt."""
+
     MISSING_STEPS = "MISSING STEPS"
     SECURITY = "SECURITY"
     PERFORMANCE = "PERFORMANCE"
@@ -34,8 +35,9 @@ class AuditCategory(str, Enum):
     COMPLETENESS = "COMPLETENESS"
 
 
-class AuditSeverity(str, Enum):
+class AuditSeverity(StrEnum):
     """Severity levels for audit findings."""
+
     CRITICAL = "CRITICAL"
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
@@ -43,29 +45,33 @@ class AuditSeverity(str, Enum):
     SUGGESTION = "SUGGESTION"
 
 
-class AuditVerdict(str, Enum):
+class AuditVerdict(StrEnum):
     """Overall audit verdict."""
+
     APPROVE = "APPROVE"
     NEEDS_REVISION = "NEEDS_REVISION"
     MAJOR_CONCERNS = "MAJOR_CONCERNS"
 
 
-class FindingVerdict(str, Enum):
+class FindingVerdict(StrEnum):
     """Per-finding verdict in refinement appendix."""
+
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
 
 
-class PlanPhase(str, Enum):
+class PlanPhase(StrEnum):
     """4 phases in the planning workflow prompt."""
+
     EXPLORE = "EXPLORE"
     ANALYZE = "ANALYZE"
     DESIGN = "DESIGN"
     PLAN = "PLAN"
 
 
-class Complexity(str, Enum):
+class Complexity(StrEnum):
     """Step complexity tags."""
+
     SMALL = "S"
     MEDIUM = "M"
     LARGE = "L"

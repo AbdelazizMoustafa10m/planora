@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal  # noqa: TC003 — required by Pydantic runtime validation
 from enum import StrEnum
 from pathlib import Path  # noqa: TC003 — required by Pydantic runtime validation
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -165,7 +166,7 @@ class PlanResult:
     archive_path: Path | None
     total_duration: timedelta
     total_cost_usd: Decimal | None
-    agent_results: dict[str, list[AgentResult]]
+    agent_results: dict[str, list[AgentResult]]  # Per-phase results keyed by phase name
     success: bool
 
     @property
@@ -181,49 +182,98 @@ class PlanResult:
         return succeeded, total
 
 
-@runtime_checkable
-class UICallback(Protocol):
+class UICallback(ABC):
     """Contract between workflow engine and UI."""
 
+    @abstractmethod
     def on_phase_start(self, phase: str, label: str) -> None: ...
 
+    @abstractmethod
     def on_phase_end(self, phase: str, result: PhaseResult) -> None: ...
 
+    @abstractmethod
     def on_agent_start(self, agent: str, phase: str) -> None: ...
 
+    @abstractmethod
     def on_agent_end(self, agent: str, result: AgentResult) -> None: ...
 
+    @abstractmethod
     def on_agent_state_change(self, agent: str, state: AgentState) -> None: ...
 
+    @abstractmethod
     def on_tool_start(self, agent: str, tool: ToolExecution) -> None: ...
 
+    @abstractmethod
     def on_tool_done(self, agent: str, tool: ToolExecution) -> None: ...
 
+    @abstractmethod
     def on_cost_update(self, agent: str, cost_usd: Decimal) -> None: ...
 
+    @abstractmethod
     def on_stall(self, agent: str, idle_seconds: float) -> None: ...
 
+    @abstractmethod
     def on_rate_limit(self, agent: str, retry_after_ms: int | None) -> None: ...
 
+    @abstractmethod
     def on_retry(self, agent: str, attempt: int, max_retries: int, error: str) -> None: ...
 
+    @abstractmethod
     def on_snapshot(self, snapshot: AgentMonitorSnapshot) -> None: ...
 
+    @abstractmethod
     def on_log(self, level: str, message: str) -> None: ...
 
+    @abstractmethod
     def on_pipeline_update(self, statuses: dict[str, PhaseStatus]) -> None: ...
 
     def dispatch_agent_event(self, agent: str, event: StreamEvent) -> None:
-        """
-        Route a raw StreamEvent to the appropriate typed callback.
-
-        Default dispatch logic:
-        - TOOL_START   -> on_tool_start(agent, ToolExecution from event)
-        - TOOL_DONE    -> on_tool_done(agent, ToolExecution from event)
-        - STATE_CHANGE -> on_agent_state_change(agent, event state)
-        - RESULT       -> on_cost_update(agent, event.cost_usd) if cost present
-        - STALL        -> on_stall(agent, idle_seconds from event)
-        - RATE_LIMIT   -> on_rate_limit(agent, event.retry_delay_ms)
-        - RETRY        -> on_retry(agent, event.retry_attempt, ...)
-        """
-        ...
+        """Route a raw StreamEvent to the appropriate typed callback."""
+        match event.event_type:
+            case StreamEventType.TOOL_START:
+                tool = ToolExecution(
+                    tool_id=event.tool_id or "",
+                    name=event.tool_name or "unknown",
+                    friendly_name=event.tool_name or "unknown",
+                    detail=event.tool_detail,
+                    started_at=event.timestamp,
+                )
+                self.on_tool_start(agent, tool)
+            case StreamEventType.TOOL_DONE:
+                duration = (
+                    timedelta(milliseconds=event.tool_duration_ms)
+                    if event.tool_duration_ms
+                    else None
+                )
+                tool = ToolExecution(
+                    tool_id=event.tool_id or "",
+                    name=event.tool_name or "unknown",
+                    friendly_name=event.tool_name or "unknown",
+                    detail=event.tool_detail,
+                    started_at=event.timestamp,
+                    completed_at=event.timestamp,
+                    status=event.tool_status or "done",
+                    duration=duration,
+                )
+                self.on_tool_done(agent, tool)
+            case StreamEventType.STATE_CHANGE:
+                state = (
+                    AgentState(event.text_preview) if event.text_preview else AgentState.THINKING
+                )
+                self.on_agent_state_change(agent, state)
+            case StreamEventType.RESULT:
+                if event.cost_usd is not None:
+                    self.on_cost_update(agent, event.cost_usd)
+            case StreamEventType.STALL:
+                self.on_stall(agent, 0.0)
+            case StreamEventType.RATE_LIMIT:
+                self.on_rate_limit(agent, event.retry_delay_ms)
+            case StreamEventType.RETRY:
+                self.on_retry(
+                    agent,
+                    event.retry_attempt or 0,
+                    event.retry_max or 0,
+                    event.error_category or "",
+                )
+            case _:
+                pass

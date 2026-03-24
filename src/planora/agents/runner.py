@@ -164,9 +164,7 @@ class AgentRunner:
             await secondary_task
 
             # Step 7 — Write stderr to log file (offloaded to thread pool)
-            await asyncio.to_thread(
-                log_path.write_text, "".join(stderr_chunks), encoding="utf-8"
-            )
+            await asyncio.to_thread(log_path.write_text, "".join(stderr_chunks), encoding="utf-8")
 
             # Step 8 — Wait for process exit
             exit_code = await proc.wait()
@@ -231,15 +229,6 @@ class AgentRunner:
             cmd.extend(["-o", str(output_path)])
         return cmd
 
-    @staticmethod
-    def _strip_preamble(text: str) -> str:
-        """Remove text before the first markdown heading (^# )."""
-        lines = text.split("\n")
-        for i, line in enumerate(lines):
-            if re.match(r"^#\s", line):
-                return "\n".join(lines[i:])
-        return text  # No heading found, return as-is
-
 
 async def _tee_to_file(
     raw: AsyncIterator[str],
@@ -285,11 +274,7 @@ def _write_output(
             output_path.write_text(text, encoding="utf-8")
 
         case OutputExtraction.Strategy.STDOUT_CAPTURE:
-            text = (
-                "".join(stdout_chunks)
-                if extraction.stderr_as_stream
-                else "".join(text_chunks)
-            )
+            text = "".join(stdout_chunks) if extraction.stderr_as_stream else "".join(text_chunks)
             output_path.write_text(text, encoding="utf-8")
 
 

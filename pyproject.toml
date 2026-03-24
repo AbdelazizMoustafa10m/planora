@@ -22,6 +22,8 @@ telemetry = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.29",
     "opentelemetry-exporter-otlp-proto-http>=1.29",
 ]
+
+[dependency-groups]
 dev = [
     "textual-dev>=1.7",
     "pytest>=8.0",

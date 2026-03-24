@@ -109,6 +109,10 @@ class WorkspaceManager:
             latest.unlink()
         latest.symlink_to(archive.name)
 
+        # Clean up .stream files from the active workspace after archival
+        for stream_file in self.workspace_dir.glob("*.stream"):
+            stream_file.unlink()
+
         return archive
 
     def cleanup(self) -> None:

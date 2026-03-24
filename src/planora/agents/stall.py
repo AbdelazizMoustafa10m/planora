@@ -28,12 +28,14 @@ class StallDetector:
     # Substrings matched case-insensitively against active tool names.
     # MCP tool names like ``mcp__exa__deep_search_exa`` match ``deep_search``
     # because the check is substring-based rather than exact equality.
-    DEEP_TOOL_PATTERNS: ClassVar[tuple[str, ...]] = (
-        "deep_search",
-        "deep_researcher",
-        "deep_research",
-        "tavily_research",
-        "tavily_crawl",
+    DEEP_TOOL_PATTERNS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "deep_search",
+            "deep_researcher",
+            "deep_research",
+            "tavily_research",
+            "tavily_crawl",
+        }
     )
 
     def __init__(

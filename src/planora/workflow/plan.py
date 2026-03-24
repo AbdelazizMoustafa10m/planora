@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 from decimal import Decimal
@@ -85,11 +86,9 @@ class PlanWorkflow:
         self._refine_template_path = refine_template_path
         self._prompt_base_dir = prompt_base_dir
         self._control = control
-        _telemetry = PlanoraTelemetry(settings) if settings is not None else None
+        self._telemetry = PlanoraTelemetry(settings) if settings is not None else None
         _hooks_manager = (
-            ClaudeHooksManager(workspace.workspace_dir.parent)
-            if settings is not None
-            else None
+            ClaudeHooksManager(workspace.workspace_dir.parent) if settings is not None else None
         )
         self._phase_runner = PhaseRunner(
             runner,
@@ -98,7 +97,7 @@ class PlanWorkflow:
             snapshot_interval=snapshot_interval,
             stall_check_interval=stall_check_interval,
             control=control,
-            telemetry=_telemetry,
+            telemetry=self._telemetry,
             hooks_manager=_hooks_manager,
         )
         self._started_at: datetime | None = None
@@ -139,107 +138,120 @@ class PlanWorkflow:
         started_at = datetime.now()
 
         task_content = await self._read_task_input(task_input)
-        self._preflight(task_content)
+        await self._preflight(task_content)
         await self._areset_run_state(task_content=task_content, started_at=started_at)
 
-        phases = self._phases
-        agent_results = self._agent_results
+        pipeline_ctx = (
+            self._telemetry.pipeline_span(self._workspace._task_slug)
+            if self._telemetry is not None
+            else contextlib.nullcontext()
+        )
+        with pipeline_ctx:
+            phases = self._phases
+            agent_results = self._agent_results
 
-        # Emit initial pipeline status
-        self._emit_pipeline_status(phases)
+            # Emit initial pipeline status
+            self._emit_pipeline_status(phases)
 
-        # ----------------------------------------------------------------
-        # Phase: plan
-        # ----------------------------------------------------------------
-        if self._skip_planning:
-            plan_phase = self._build_skipped_plan_phase()
-            self._ui.on_log(
-                "info",
-                "Skipping planning and reusing existing initial-plan.md.",
-            )
-        else:
-            plan_phase = await self.phase_plan()
-        self._record_phase_result(plan_phase)
-        self._emit_pipeline_status(phases)
+            # ----------------------------------------------------------------
+            # Phase: plan
+            # ----------------------------------------------------------------
+            if self._skip_planning:
+                plan_phase = self._build_skipped_plan_phase()
+                self._ui.on_log(
+                    "info",
+                    "Skipping planning and reusing existing initial-plan.md.",
+                )
+            else:
+                plan_phase = await self.phase_plan()
+            self._record_phase_result(plan_phase)
+            self._emit_pipeline_status(phases)
 
-        if plan_phase.status == PhaseStatus.FAILED:
+            if plan_phase.status == PhaseStatus.FAILED:
+                return self._build_result(
+                    phases=phases,
+                    agent_results=agent_results,
+                    final_plan_path=None,
+                    report_path=None,
+                    archive_path=None,
+                    started_at=self._require_started_at(),
+                    success=False,
+                )
+
+            # Pause checkpoint -- honoured at each inter-phase boundary
+            if self._control is not None:
+                await self._control.wait_if_paused()
+
+            # ----------------------------------------------------------------
+            # Audit / refine rounds
+            # ----------------------------------------------------------------
+            for round_num in range(1, self._audit_rounds + 1):
+                if round_num in self._completed_rounds:
+                    self._ui.on_log(
+                        "info",
+                        f"Skipping completed round {round_num}.",
+                    )
+                    continue
+
+                audit_phase = await self.phase_audit(round_num)
+                self._record_phase_result(audit_phase)
+                self._emit_pipeline_status(phases)
+
+                if self._control is not None:
+                    await self._control.wait_if_paused()
+
+                # Collect non-empty audit results for refinement
+                audit_reports = dict(self._round_audit_reports.get(round_num, {}))
+
+                if not audit_reports:
+                    self._ui.on_log(
+                        "warning",
+                        f"All auditors failed in round {round_num}. Skipping refinement.",
+                    )
+                    continue
+
+                # b) Refine phase
+                plan_content = await self._current_plan_content()
+                refine_phase = await self.phase_refine(round_num)
+                self._record_phase_result(refine_phase)
+                self._emit_pipeline_status(phases)
+
+                if self._control is not None:
+                    await self._control.wait_if_paused()
+
+                if refine_phase.status == PhaseStatus.FAILED:
+                    self._ui.on_log(
+                        "warning",
+                        f"Refinement failed in round {round_num}. "
+                        "Using previous plan content as final.",
+                    )
+                    # Copy previous plan to final-plan.md so downstream always has it
+                    await self._copy_to_final_plan(plan_content)
+
+                # Accumulate current round audits into prior_audits for next round
+                self._prior_audits[f"Round {round_num}"] = "\n\n".join(audit_reports.values())
+
+            # ----------------------------------------------------------------
+            # Determine final plan path
+            # ----------------------------------------------------------------
+            self._final_plan_path = self._resolve_final_plan_path()
+
+            # ----------------------------------------------------------------
+            # Phase: report (non-fatal)
+            # ----------------------------------------------------------------
+            report_phase_result = await self.phase_report()
+            if report_phase_result is not None:
+                phases.append(report_phase_result)
+
             return self._build_result(
                 phases=phases,
                 agent_results=agent_results,
-                final_plan_path=None,
-                report_path=None,
-                archive_path=None,
+                final_plan_path=self._final_plan_path,
+                report_path=self._report_path,
+                archive_path=self._archive_path,
                 started_at=self._require_started_at(),
-                success=False,
+                success=True,
             )
-
-        # Pause checkpoint -- honoured at each inter-phase boundary
-        if self._control is not None:
-            await self._control.wait_if_paused()
-
-        # ----------------------------------------------------------------
-        # Audit / refine rounds
-        # ----------------------------------------------------------------
-        for round_num in range(1, self._audit_rounds + 1):
-            audit_phase = await self.phase_audit(round_num)
-            self._record_phase_result(audit_phase)
-            self._emit_pipeline_status(phases)
-
-            if self._control is not None:
-                await self._control.wait_if_paused()
-
-            # Collect non-empty audit results for refinement
-            audit_reports = dict(self._round_audit_reports.get(round_num, {}))
-
-            if not audit_reports:
-                self._ui.on_log(
-                    "warning",
-                    f"All auditors failed in round {round_num}. Skipping refinement.",
-                )
-                continue
-
-            # b) Refine phase
-            plan_content = await self._current_plan_content()
-            refine_phase = await self.phase_refine(round_num)
-            self._record_phase_result(refine_phase)
-            self._emit_pipeline_status(phases)
-
-            if self._control is not None:
-                await self._control.wait_if_paused()
-
-            if refine_phase.status == PhaseStatus.FAILED:
-                self._ui.on_log(
-                    "warning",
-                    f"Refinement failed in round {round_num}. "
-                    "Using previous plan content as final.",
-                )
-                # Copy previous plan to final-plan.md so downstream always has it
-                await self._copy_to_final_plan(plan_content)
-
-            # Accumulate current round audits into prior_audits for next round
-            self._prior_audits[f"Round {round_num}"] = "\n\n".join(audit_reports.values())
-
-        # ----------------------------------------------------------------
-        # Determine final plan path
-        # ----------------------------------------------------------------
-        self._final_plan_path = self._resolve_final_plan_path()
-
-        # ----------------------------------------------------------------
-        # Phase: report (non-fatal)
-        # ----------------------------------------------------------------
-        report_phase_result = await self.phase_report()
-        if report_phase_result is not None:
-            phases.append(report_phase_result)
-
-        return self._build_result(
-            phases=phases,
-            agent_results=agent_results,
-            final_plan_path=self._final_plan_path,
-            report_path=self._report_path,
-            archive_path=self._archive_path,
-            started_at=self._require_started_at(),
-            success=True,
-        )
 
     async def phase_plan(self) -> PhaseResult:
         """Run the initial planning phase; produces initial-plan.md."""
@@ -328,14 +340,12 @@ class PlanWorkflow:
     # Private — setup helpers
     # ------------------------------------------------------------------
 
-    def _preflight(self, task_content: str) -> None:
+    async def _preflight(self, task_content: str) -> None:
         """Validate agents, create workspace, save task-input.md."""
         all_agents = [self._planner, *self._auditors]
         missing = self._registry.validate(all_agents)
         if missing:
-            raise ValueError(
-                f"Agents not available (binary not on PATH): {', '.join(missing)}"
-            )
+            raise ValueError(f"Agents not available (binary not on PATH): {', '.join(missing)}")
 
         self._workspace.set_task_slug(task_content)
         self._workspace.ensure_dirs(reuse=self._reuse_workspace or self._skip_planning)
@@ -346,7 +356,7 @@ class PlanWorkflow:
                     "skip_planning requires an existing non-empty initial-plan.md "
                     "in .plan-workspace/."
                 )
-        self._workspace.write_file("task-input.md", task_content)
+        await self._workspace.awrite_file("task-input.md", task_content)
 
     @staticmethod
     async def _read_task_input(task_input: str | Path) -> str:
@@ -437,11 +447,7 @@ class PlanWorkflow:
 
     def _audit_output_path(self, auditor: str, round_num: int) -> Path:
         """Return the workspace path for a given auditor and round."""
-        filename = (
-            f"audit-{auditor}.md"
-            if round_num == 1
-            else f"audit-{auditor}-r{round_num}.md"
-        )
+        filename = f"audit-{auditor}.md" if round_num == 1 else f"audit-{auditor}-r{round_num}.md"
         return self._workspace.workspace_dir / filename
 
     async def _collect_audit_reports(
@@ -476,12 +482,12 @@ class PlanWorkflow:
         return await self._workspace.aread_file("initial-plan.md") or ""
 
     def _resolve_final_plan_path(self) -> Path | None:
-        """Return path to final-plan.md if it exists, else initial-plan.md."""
+        """Return path to final-plan.md if it exists and is non-empty, else initial-plan.md."""
         final = self._workspace.workspace_dir / "final-plan.md"
-        if final.exists():
+        if final.exists() and final.stat().st_size > 0:
             return final
         initial = self._workspace.workspace_dir / "initial-plan.md"
-        if initial.exists():
+        if initial.exists() and initial.stat().st_size > 0:
             return initial
         return None
 

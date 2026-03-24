@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from planora.observability.telemetry import PlanoraTelemetry
 
 
-
 class WorkflowControl:
     """Shared control object that allows the TUI to pause or skip phases.
 

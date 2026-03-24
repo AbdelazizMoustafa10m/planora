@@ -331,3 +331,34 @@ def test_generate_plan_report_includes_archive_path(tmp_path: Path) -> None:
 
     content = report_path.read_text(encoding="utf-8")
     assert "Archive" in content
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: _extract_verdict
+# ---------------------------------------------------------------------------
+
+
+def test_extract_verdict_returns_unknown_for_empty_content() -> None:
+    assert _extract_verdict("") == "UNKNOWN"
+
+
+def test_extract_verdict_does_not_crash_on_binary_like_content() -> None:
+    # Null bytes, high-codepoint characters, and mixed ASCII should not raise
+    content = "\x00\xff\u2603## Verdict\n\x01\x02\x03"
+    result = _extract_verdict(content)
+    assert result == "UNKNOWN"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: _count_severities
+# ---------------------------------------------------------------------------
+
+
+def test_count_severities_returns_all_zero_when_no_findings() -> None:
+    content = "## Findings\nNo issues found.\n## Strengths\nWell structured.\n"
+
+    result = _count_severities(content)
+
+    assert all(v == 0 for v in result.values()), (
+        f"Expected all zero counts but got {result}"
+    )

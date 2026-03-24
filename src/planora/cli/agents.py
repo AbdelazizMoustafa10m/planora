@@ -386,9 +386,7 @@ def agents_check(
                 )
                 version_output = proc.stdout.strip() or proc.stderr.strip()
                 if version_output:
-                    console.print(
-                        f"  [green]✓[/green] Version: {version_output.splitlines()[0]}"
-                    )
+                    console.print(f"  [green]✓[/green] Version: {version_output.splitlines()[0]}")
                 else:
                     console.print("  [yellow]?[/yellow] Version: no output")
             except subprocess.TimeoutExpired:

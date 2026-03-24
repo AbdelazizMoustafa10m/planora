@@ -35,21 +35,15 @@ _ACTIVE_TEMPLATE_CONFIG: _TemplateConfig | None = None
 # Dynamic lists derived from enum members — built once at module load time
 # ---------------------------------------------------------------------------
 
-_SECTIONS_LIST: str = "\n".join(
-    f"## {i + 1}. {s.value}" for i, s in enumerate(PlanSection)
-)
+_SECTIONS_LIST: str = "\n".join(f"## {i + 1}. {s.value}" for i, s in enumerate(PlanSection))
 
-_AUDIT_CATEGORIES_LIST: str = "\n".join(
-    f"- {c.value}" for c in AuditCategory
-)
+_AUDIT_CATEGORIES_LIST: str = "\n".join(f"- {c.value}" for c in AuditCategory)
 
 _SEVERITY_LEVELS_LIST: str = " > ".join(s.value for s in AuditSeverity)
 
 _VERDICT_OPTIONS_LIST: str = " | ".join(v.value for v in AuditVerdict)
 
-_COMPLEXITY_TAGS: str = ", ".join(
-    f"[{c.value}] = {c.name.capitalize()}" for c in Complexity
-)
+_COMPLEXITY_TAGS: str = ", ".join(f"[{c.value}] = {c.name.capitalize()}" for c in Complexity)
 
 _FINDING_VERDICTS: str = " | ".join(v.value for v in FindingVerdict)
 
@@ -319,9 +313,7 @@ All steps must respect these project-specific conventions.
         else ""
     )
 
-    phase_descriptions = "\n".join(
-        f"  - **{phase.value}**" for phase in PlanPhase
-    )
+    phase_descriptions = "\n".join(f"  - **{phase.value}**" for phase in PlanPhase)
 
     return f"""\
 ## System Role
@@ -526,8 +518,7 @@ def _build_audit_prompt_builtin(
     prior_audits_section = ""
     if prior_audits:
         prior_sections = "\n\n".join(
-            f"### {label}\n\n```\n{text}\n```"
-            for label, text in prior_audits.items()
+            f"### {label}\n\n```\n{text}\n```" for label, text in prior_audits.items()
         )
         prior_audits_section = f"""
 ---
@@ -714,16 +705,14 @@ def _build_refinement_prompt_builtin(
 
     # Build the audit reports block (reports to act on)
     audit_reports_block = "\n\n".join(
-        f"### {label}\n\n```\n{text}\n```"
-        for label, text in audit_reports.items()
+        f"### {label}\n\n```\n{text}\n```" for label, text in audit_reports.items()
     )
 
     # Build the prior audits block (historical context, round 2+ only)
     prior_audits_section = ""
     if prior_audits:
         prior_block = "\n\n".join(
-            f"### {label}\n\n```\n{text}\n```"
-            for label, text in prior_audits.items()
+            f"### {label}\n\n```\n{text}\n```" for label, text in prior_audits.items()
         )
         prior_audits_section = f"""
 ---

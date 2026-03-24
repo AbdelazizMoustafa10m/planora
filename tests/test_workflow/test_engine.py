@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,6 +18,7 @@ from planora.core.events import (
     StreamEventType,
     ToolCounters,
     ToolExecution,
+    UICallback,
 )
 from planora.workflow.engine import PhaseRunner, _failed_phase
 
@@ -44,7 +46,7 @@ def _agent_result(
 
 
 @dataclass
-class _RecordingUI:
+class _RecordingUI(UICallback):  # type: ignore[misc]
     phase_starts: list[tuple[str, str]] = field(default_factory=list)
     phase_ends: list[tuple[str, PhaseResult]] = field(default_factory=list)
     agent_starts: list[tuple[str, str]] = field(default_factory=list)
@@ -300,3 +302,58 @@ async def test_run_phase_forwards_snapshots_and_tracks_processes(
     assert runner.process_start_calls == 1
     assert runner.process_end_calls == 1
     assert phase_runner._active_processes == []
+
+
+# ------------------------------------------------------------------
+# Signal handling
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_initiate_shutdown_terminates_active_processes(monkeypatch, tmp_path) -> None:
+    """First call to _initiate_shutdown sets _shutting_down and terminates processes."""
+    monkeypatch.setattr(PhaseRunner, "_install_signal_handlers", lambda self: None)
+
+    ui = _RecordingUI()
+    agent = _make_agent("claude")
+    result = _agent_result(
+        agent_name=agent.name,
+        output_path=tmp_path / "initial-plan.md",
+    )
+    phase_runner = PhaseRunner(_StubRunner({agent.name: result}), ui)
+
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    phase_runner._active_processes.append(mock_process)
+
+    phase_runner._initiate_shutdown()
+
+    assert phase_runner._shutting_down is True
+    mock_process.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_double_shutdown_kills_active_processes(monkeypatch, tmp_path) -> None:
+    """Second call to _initiate_shutdown kills processes instead of terminating them."""
+    monkeypatch.setattr(PhaseRunner, "_install_signal_handlers", lambda self: None)
+
+    ui = _RecordingUI()
+    agent = _make_agent("claude")
+    result = _agent_result(
+        agent_name=agent.name,
+        output_path=tmp_path / "initial-plan.md",
+    )
+    phase_runner = PhaseRunner(_StubRunner({agent.name: result}), ui)
+
+    mock_process = MagicMock()
+    mock_process.returncode = None
+    phase_runner._active_processes.append(mock_process)
+
+    # First signal: graceful terminate
+    phase_runner._initiate_shutdown()
+    assert phase_runner._shutting_down is True
+    mock_process.terminate.assert_called_once()
+
+    # Second signal: force kill
+    phase_runner._initiate_shutdown()
+    mock_process.kill.assert_called_once()

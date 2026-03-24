@@ -44,7 +44,7 @@ def _extract_verdict(audit_content: str) -> str:
     if not match:
         return _UNKNOWN_VERDICT
 
-    after = audit_content[match.end():]
+    after = audit_content[match.end() :]
     for line in after.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -68,7 +68,7 @@ def _count_findings(audit_content: str) -> int:
     if not section_match:
         return 0
 
-    findings_body = audit_content[section_match.end():]
+    findings_body = audit_content[section_match.end() :]
     # Truncate at the next top-level or second-level heading
     next_section = re.search(r"^##\s+", findings_body, re.MULTILINE)
     if next_section:
@@ -144,8 +144,7 @@ def _build_pipeline_config_section(
     if auditors:
         if auditor_models:
             auditor_parts = [
-                f"{a} ({auditor_models[a]})" if a in auditor_models else a
-                for a in auditors
+                f"{a} ({auditor_models[a]})" if a in auditor_models else a for a in auditors
             ]
         else:
             auditor_parts = list(auditors)
@@ -223,9 +222,7 @@ def _build_audit_results_section(
             severities = _count_severities(content)
 
             severity_parts = [
-                f"{count} {label}"
-                for label, count in severities.items()
-                if count > 0
+                f"{count} {label}" for label, count in severities.items() if count > 0
             ]
             severity_str = ", ".join(severity_parts) if severity_parts else "none"
 
@@ -240,9 +237,7 @@ def _build_audit_results_section(
 def _audit_phase_counts(phase: PhaseResult) -> tuple[int, int]:
     """Return (succeeded, total) agent counts for an audit phase."""
     total = len(phase.agent_results)
-    succeeded = sum(
-        1 for ar in phase.agent_results if not ar.output_empty and ar.exit_code == 0
-    )
+    succeeded = sum(1 for ar in phase.agent_results if not ar.output_empty and ar.exit_code == 0)
     return succeeded, total
 
 
@@ -386,19 +381,21 @@ def generate_plan_report(
 
     cost_section = _build_agent_cost_section(plan_result.agent_results)
 
-    archive_section = (
-        "## Archive\n\n"
-        f"All outputs archived to: `{workspace.archive_dir}`\n"
-    )
+    archive_section = f"## Archive\n\nAll outputs archived to: `{workspace.archive_dir}`\n"
 
-    content = "\n\n".join([
-        header.rstrip(),
-        pipeline_section.rstrip(),
-        phase_section.rstrip(),
-        audit_section.rstrip(),
-        files_section.rstrip(),
-        cost_section.rstrip(),
-        archive_section.rstrip(),
-    ]) + "\n"
+    content = (
+        "\n\n".join(
+            [
+                header.rstrip(),
+                pipeline_section.rstrip(),
+                phase_section.rstrip(),
+                audit_section.rstrip(),
+                files_section.rstrip(),
+                cost_section.rstrip(),
+                archive_section.rstrip(),
+            ]
+        )
+        + "\n"
+    )
 
     return workspace.write_file("plan-report.md", content)

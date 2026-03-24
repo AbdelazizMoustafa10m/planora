@@ -1,23 +1,26 @@
-.PHONY: check fmt test test-cov coverage security build install
+.PHONY: check fmt lint typecheck security test test-cov coverage build install
 
-check:
-	uv run ruff check src/planora/
-	uv run mypy src/planora/ --strict
-	uv run pytest
+check: fmt lint typecheck security test
 
 fmt:
 	uv run ruff format src/planora/
 
+lint:
+	uv run ruff check src/planora/
+
+typecheck:
+	uv run mypy src/planora/ --strict
+
 test:
 	uv run pytest
+
+security:
+	uv run bandit -r src/planora/
 
 test-cov: coverage
 
 coverage:
 	uv run pytest --cov=src/planora --cov-report=term-missing
-
-security:
-	uv run bandit -r src/planora/
 
 build:
 	uv build

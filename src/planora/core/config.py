@@ -463,23 +463,19 @@ class PlanораSettings(BaseSettings):
 
         if self.claude_model == _DEFAULT_AGENT_MODELS["claude"]:
             self.claude_model = (
-                self.agents.get("claude", AgentOverrideConfig()).model
-                or self.claude_model
+                self.agents.get("claude", AgentOverrideConfig()).model or self.claude_model
             )
         if self.copilot_model == _DEFAULT_AGENT_MODELS["copilot"]:
             self.copilot_model = (
-                self.agents.get("copilot", AgentOverrideConfig()).model
-                or self.copilot_model
+                self.agents.get("copilot", AgentOverrideConfig()).model or self.copilot_model
             )
         if self.codex_model == _DEFAULT_AGENT_MODELS["codex"]:
             self.codex_model = (
-                self.agents.get("codex", AgentOverrideConfig()).model
-                or self.codex_model
+                self.agents.get("codex", AgentOverrideConfig()).model or self.codex_model
             )
         if self.gemini_model == _DEFAULT_AGENT_MODELS["gemini"]:
             self.gemini_model = (
-                self.agents.get("gemini", AgentOverrideConfig()).model
-                or self.gemini_model
+                self.agents.get("gemini", AgentOverrideConfig()).model or self.gemini_model
             )
 
         if self.stall_timeout == _DEFAULT_STALL_TIMEOUT:
@@ -504,9 +500,7 @@ class PlanораSettings(BaseSettings):
         """Return a new settings object with a named profile merged on top."""
         if profile_name not in self.profiles:
             available = ", ".join(sorted(self.profiles)) or "none defined"
-            raise ValueError(
-                f"Profile '{profile_name}' not found. Available profiles: {available}"
-            )
+            raise ValueError(f"Profile '{profile_name}' not found. Available profiles: {available}")
 
         profile = self.profiles[profile_name]
         patch: dict[str, Any] = {}
@@ -560,8 +554,7 @@ class PlanораSettings(BaseSettings):
             raw_value = raw_value.strip()
             if not key:
                 raise ValueError(
-                    f"Invalid --config value '{override}'. "
-                    "Config keys must not be empty."
+                    f"Invalid --config value '{override}'. Config keys must not be empty."
                 )
 
             keys = key.split(".")

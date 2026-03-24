@@ -13,7 +13,9 @@ from planora.core.events import (
     AgentState,
     PhaseResult,
     PhaseStatus,
+    StreamEvent,
     ToolExecution,
+    UICallback,
 )
 from planora.core.workspace import WorkspaceManager
 from planora.workflow.plan import PlanWorkflow
@@ -73,7 +75,7 @@ class _RegistryStub:
 
 
 @dataclass
-class _RecordingUI:
+class _RecordingUI(UICallback):  # type: ignore[misc]
     logs: list[tuple[str, str]] = field(default_factory=list)
     pipeline_updates: list[dict[str, PhaseStatus]] = field(default_factory=list)
 
@@ -119,7 +121,7 @@ class _RecordingUI:
     def on_pipeline_update(self, statuses: dict[str, PhaseStatus]) -> None:
         self.pipeline_updates.append(dict(statuses))
 
-    def dispatch_agent_event(self, agent: str, event) -> None:
+    def dispatch_agent_event(self, agent: str, event: StreamEvent) -> None:
         del agent, event
 
 
@@ -414,3 +416,53 @@ async def test_run_skip_planning_reuses_existing_initial_plan(monkeypatch, tmp_p
     assert result.phases[0].status == PhaseStatus.SKIPPED
     assert initial_plan.read_text(encoding="utf-8") == "# Existing plan\n"
     assert result.final_plan_path == initial_plan
+
+
+@pytest.mark.asyncio
+async def test_run_skips_audit_and_refine_for_completed_rounds(monkeypatch, tmp_path) -> None:
+    """completed_rounds={1} with audit_rounds=1 skips audit and refine entirely."""
+    planner = _agent_config("claude")
+    gemini = _agent_config("gemini")
+    registry = _RegistryStub({"claude": planner, "gemini": gemini})
+    workspace = WorkspaceManager(tmp_path)
+    ui = _RecordingUI()
+
+    async def plan_handler(agent: AgentConfig, output_path):
+        del agent
+        output_path.write_text("# Initial plan\n", encoding="utf-8")
+        return PhaseResult(
+            name="plan",
+            status=PhaseStatus.DONE,
+            output_files=[output_path],
+            agent_results=[_agent_result("claude", output_path)],
+        )
+
+    workflow = PlanWorkflow(
+        workspace=workspace,
+        registry=registry,
+        runner=object(),
+        ui=ui,
+        planner="claude",
+        auditors=["gemini"],
+        audit_rounds=1,
+        completed_rounds={1},
+    )
+    workflow._phase_runner = _PhaseRunnerStub({"plan": plan_handler})
+    _install_report_stubs(monkeypatch, workspace, tmp_path)
+    monkeypatch.setattr(
+        "planora.workflow.plan.build_plan_prompt",
+        lambda *_args, **_kwargs: "plan prompt",
+    )
+
+    result = await workflow.run("Implement feature X")
+
+    assert result.success is True
+    assert any(
+        "Skipping completed round" in message for _level, message in ui.logs
+    ), "Expected 'Skipping completed round' log message"
+    # Audit and refine phases are not recorded — only plan and report
+    phase_names = [phase.name for phase in result.phases]
+    assert "audit" not in phase_names
+    assert "refine" not in phase_names
+    assert ("parallel", "audit") not in workflow._phase_runner.calls
+    assert ("phase", "refine") not in workflow._phase_runner.calls

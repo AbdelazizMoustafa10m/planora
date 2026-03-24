@@ -1029,15 +1029,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "bandit" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "textual-dev" },
-]
 telemetry = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -1050,29 +1041,44 @@ tui = [
     { name = "trogon" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "bandit" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "textual-dev" },
+]
+
 [package.metadata]
 requires-dist = [
-    { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.8" },
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "opentelemetry-api", marker = "extra == 'telemetry'", specifier = ">=1.29" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'telemetry'", specifier = ">=1.29" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'telemetry'", specifier = ">=1.29" },
     { name = "opentelemetry-sdk", marker = "extra == 'telemetry'", specifier = ">=1.29" },
     { name = "pydantic", specifier = ">=2.10" },
     { name = "pydantic-settings", specifier = ">=2.7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.1" },
-    { name = "textual-dev", marker = "extra == 'dev'", specifier = ">=1.7" },
     { name = "textual-speedups", marker = "extra == 'tui'", specifier = ">=0.1" },
     { name = "trogon", marker = "extra == 'tui'", specifier = ">=0.6" },
     { name = "typer", specifier = ">=0.13" },
 ]
-provides-extras = ["tui", "telemetry", "dev"]
+provides-extras = ["tui", "telemetry"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "bandit", specifier = ">=1.8" },
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-cov", specifier = ">=6.0" },
+    { name = "ruff", specifier = ">=0.8" },
+    { name = "textual-dev", specifier = ">=1.7" },
+]
 
 [[package]]
 name = "platformdirs"

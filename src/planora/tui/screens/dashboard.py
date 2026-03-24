@@ -81,9 +81,7 @@ class DashboardScreen(Screen[None]):
         ]
         self.query_one("#run-summary", Static).update("\n".join(summary_lines))
 
-        self.query_one("#pipeline-progress", PipelineProgress).configure(
-            audit_rounds=audit_rounds
-        )
+        self.query_one("#pipeline-progress", PipelineProgress).configure(audit_rounds=audit_rounds)
         self.query_one("#agent-activity", AgentActivityPanel).set_agents(agents)
         self.query_one("#agent-activity", AgentActivityPanel).reset()
         self.query_one("#agent-output", AgentOutputPanel).set_agents(agents)

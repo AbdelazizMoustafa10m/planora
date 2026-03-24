@@ -35,8 +35,7 @@ def _require_existing_initial_plan(root: Path) -> None:
         return
 
     console.print(
-        "[red]--skip-planning requires an existing non-empty "
-        ".plan-workspace/initial-plan.md[/red]"
+        "[red]--skip-planning requires an existing non-empty .plan-workspace/initial-plan.md[/red]"
     )
     raise typer.Exit(1)
 
@@ -58,8 +57,7 @@ def _detect_completed_rounds(
         return completed
     for round_num in range(1, total_rounds + 1):
         audit_files_present = all(
-            _audit_file_nonempty(workspace_dir, auditor, round_num)
-            for auditor in auditors
+            _audit_file_nonempty(workspace_dir, auditor, round_num) for auditor in auditors
         )
         if audit_files_present:
             completed.add(round_num)
@@ -68,11 +66,7 @@ def _detect_completed_rounds(
 
 def _audit_file_nonempty(workspace_dir: Path, auditor: str, round_num: int) -> bool:
     """Return True when the audit output file for (auditor, round) is present and non-empty."""
-    filename = (
-        f"audit-{auditor}.md"
-        if round_num == 1
-        else f"audit-{auditor}-r{round_num}.md"
-    )
+    filename = f"audit-{auditor}.md" if round_num == 1 else f"audit-{auditor}-r{round_num}.md"
     path = workspace_dir / filename
     return path.exists() and path.stat().st_size > 0
 
@@ -120,32 +114,18 @@ def _resolve_input_mode(
 def plan_run(
     ctx: typer.Context,
     task: Annotated[str | None, typer.Argument(help="Task description")] = None,
-    task_file: Annotated[
-        Path | None, typer.Option(help="Read task from file")
-    ] = None,
+    task_file: Annotated[Path | None, typer.Option(help="Read task from file")] = None,
     planner: Annotated[str, typer.Option(help="Planner agent")] = "claude",
-    auditors: Annotated[
-        str, typer.Option(help="Comma-separated auditor list")
-    ] = "gemini,codex",
+    auditors: Annotated[str, typer.Option(help="Comma-separated auditor list")] = "gemini,codex",
     audit_rounds: Annotated[
         int, typer.Option(help="Audit+refine cycles (1 or 2)", min=1, max=2)
     ] = 1,
-    concurrency: Annotated[
-        int, typer.Option(help="Max parallel auditors", min=1)
-    ] = 3,
-    skip_planning: Annotated[
-        bool, typer.Option(help="Reuse existing initial-plan.md")
-    ] = False,
+    concurrency: Annotated[int, typer.Option(help="Max parallel auditors", min=1)] = 3,
+    skip_planning: Annotated[bool, typer.Option(help="Reuse existing initial-plan.md")] = False,
     skip_audit: Annotated[bool, typer.Option(help="Skip audit phases")] = False,
-    skip_refinement: Annotated[
-        bool, typer.Option(help="Skip refinement phases")
-    ] = False,
-    dry_run: Annotated[
-        bool, typer.Option(help="Show commands without executing")
-    ] = False,
-    interactive: Annotated[
-        bool, typer.Option("-i", help="Launch interactive wizard")
-    ] = False,
+    skip_refinement: Annotated[bool, typer.Option(help="Skip refinement phases")] = False,
+    dry_run: Annotated[bool, typer.Option(help="Show commands without executing")] = False,
+    interactive: Annotated[bool, typer.Option("-i", help="Launch interactive wizard")] = False,
     tui: Annotated[bool, typer.Option(help="Launch TUI dashboard")] = False,
     output_format: Annotated[
         str, typer.Option(help="Output format: text (default), events (JSONL on stderr)")
@@ -209,13 +189,9 @@ def plan_run(
             settings = settings.with_config_overrides(config)
         cli_config_overrides: list[str] = []
         if _option_was_supplied(ctx, "stall_timeout"):
-            cli_config_overrides.append(
-                f"observability.stall_timeout={stall_timeout}"
-            )
+            cli_config_overrides.append(f"observability.stall_timeout={stall_timeout}")
         if _option_was_supplied(ctx, "deep_timeout"):
-            cli_config_overrides.append(
-                f"observability.deep_tool_timeout={deep_timeout}"
-            )
+            cli_config_overrides.append(f"observability.deep_tool_timeout={deep_timeout}")
         if cli_config_overrides:
             settings = settings.with_config_overrides(cli_config_overrides)
     except ValueError as exc:
@@ -236,9 +212,7 @@ def plan_run(
         else settings.effective_audit_rounds
     )
     resolved_concurrency = (
-        concurrency
-        if _option_was_supplied(ctx, "concurrency")
-        else settings.effective_concurrency
+        concurrency if _option_was_supplied(ctx, "concurrency") else settings.effective_concurrency
     )
 
     root_setting = (
@@ -273,9 +247,7 @@ def plan_run(
     # 7. Fail fast: validate planner binary before creating workspace
     missing = registry.validate([resolved_planner])
     if missing:
-        console.print(
-            f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]"
-        )
+        console.print(f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]")
         raise typer.Exit(1)
 
     # 8. TUI mode — optional extra; fall back gracefully
@@ -359,23 +331,15 @@ def plan_run(
     raise typer.Exit(1)
 
 
-
-
 @plan_app.command("wizard")
 def plan_wizard(
     planner: Annotated[str, typer.Option(help="Planner agent")] = "claude",
-    auditors: Annotated[
-        str, typer.Option(help="Comma-separated auditor list")
-    ] = "gemini,codex",
+    auditors: Annotated[str, typer.Option(help="Comma-separated auditor list")] = "gemini,codex",
     audit_rounds: Annotated[
         int, typer.Option(help="Audit+refine cycles (1 or 2)", min=1, max=2)
     ] = 1,
-    concurrency: Annotated[
-        int, typer.Option(help="Max parallel auditors", min=1)
-    ] = 3,
-    dry_run: Annotated[
-        bool, typer.Option(help="Show commands without executing")
-    ] = False,
+    concurrency: Annotated[int, typer.Option(help="Max parallel auditors", min=1)] = 3,
+    dry_run: Annotated[bool, typer.Option(help="Show commands without executing")] = False,
     output_format: Annotated[
         str, typer.Option(help="Output format: text (default), events (JSONL on stderr)")
     ] = "text",
@@ -434,9 +398,7 @@ def plan_wizard(
 
     missing = registry.validate([resolved_planner])
     if missing:
-        console.print(
-            f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]"
-        )
+        console.print(f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]")
         raise typer.Exit(1)
 
     ui: CLICallback | EventsOutputCallback
@@ -480,11 +442,10 @@ def plan_wizard(
                 console.print(f"  Error: {phase.error}")
     raise typer.Exit(1)
 
+
 @plan_app.command("resume")
 def plan_resume(
-    project_root: Annotated[
-        Path | None, typer.Option(help="Project root")
-    ] = None,
+    project_root: Annotated[Path | None, typer.Option(help="Project root")] = None,
     tui: Annotated[bool, typer.Option(help="Launch TUI dashboard")] = False,
     output_format: Annotated[
         str, typer.Option(help="Output format: text (default), events (JSONL on stderr)")
@@ -499,9 +460,7 @@ def plan_resume(
 
     # 1. Workspace must exist
     if not workspace_dir.exists():
-        console.print(
-            "[red]No workspace to resume from (.plan-workspace/ not found)[/red]"
-        )
+        console.print("[red]No workspace to resume from (.plan-workspace/ not found)[/red]")
         raise typer.Exit(1)
 
     # 2. task-input.md is required — no task, nothing to resume
@@ -558,9 +517,7 @@ def plan_resume(
 
     # Detect which audit+refine rounds are fully complete so the workflow
     # can skip them rather than re-running or wiping their outputs.
-    completed_rounds = _detect_completed_rounds(
-        workspace_dir, effective_auditors, effective_rounds
-    )
+    completed_rounds = _detect_completed_rounds(workspace_dir, effective_auditors, effective_rounds)
 
     configure_prompt_templates(
         plan=settings.prompts.plan,
