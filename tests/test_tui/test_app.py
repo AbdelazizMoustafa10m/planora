@@ -108,6 +108,8 @@ async def test_execute_workflow_uses_injected_dependencies(monkeypatch, tmp_path
     runner = object()
 
     class DummyWorkflow:
+        _phase_runner = None  # satisfies tui/app.py's self._workflow_phase_runner access
+
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 

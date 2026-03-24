@@ -16,13 +16,20 @@ planora = "planora.cli.app:app"
 
 [project.optional-dependencies]
 tui = ["textual>=8.1", "textual-speedups>=0.1", "trogon>=0.6"]
-telemetry = ["opentelemetry-api>=1.29", "opentelemetry-sdk>=1.29"]
+telemetry = [
+    "opentelemetry-api>=1.29",
+    "opentelemetry-sdk>=1.29",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.29",
+    "opentelemetry-exporter-otlp-proto-http>=1.29",
+]
 dev = [
     "textual-dev>=1.7",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
     "mypy>=1.13",
     "ruff>=0.8",
+    "bandit>=1.8",
 ]
 
 [tool.ruff]

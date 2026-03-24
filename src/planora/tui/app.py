@@ -36,6 +36,7 @@ from planora.tui.screens.wizard import WizardLaunch, WizardScreen
 if TYPE_CHECKING:
     from planora.agents.registry import AgentRegistry
     from planora.agents.runner import AgentRunner
+    from planora.workflow.engine import WorkflowControl
 
 
 class WorkflowCompleted(Message, bubble=False):
@@ -101,6 +102,9 @@ class PlanoraTUI(App[None]):
 
         self._shutting_down = False
         self._exit_when_stopped = False
+        self._workflow_control: WorkflowControl | None = None
+        self._workflow_phase_runner: object = None  # PhaseRunner, set when workflow starts
+        self._is_paused = False
 
         self._workflow_started_at: datetime | None = None
         self._phase_display_label = "Waiting"
@@ -150,12 +154,38 @@ class PlanoraTUI(App[None]):
         self._request_workflow_cancel("Cancellation requested.")
 
     def action_pause(self) -> None:
-        self.notify("Pause is not available in this TUI slice.", severity="information")
-        self._log_system("Pause requested, but pause is not implemented.")
+        if not self._workflow_is_active():
+            self.notify("No workflow is running.", severity="information")
+            return
+
+        if self._workflow_control is None:
+            self.notify("Workflow control not available.", severity="warning")
+            return
+
+        if self._is_paused:
+            self._is_paused = False
+            self._workflow_control.resume()
+            self.notify("Workflow resumed.", severity="information")
+            self._log_system("Workflow resumed.", level="info")
+        else:
+            self._is_paused = True
+            self._workflow_control.pause()
+            self.notify("Workflow paused. Press P to resume.", severity="warning")
+            self._log_system("Workflow paused at next phase boundary.", level="warning")
 
     def action_skip_phase(self) -> None:
-        self.notify("Skip phase is not available in this TUI slice.", severity="information")
-        self._log_system("Skip phase requested, but skipping is not implemented.")
+        if not self._workflow_is_active():
+            self.notify("No workflow is running.", severity="information")
+            return
+
+        if self._workflow_control is None:
+            self.notify("Workflow control not available.", severity="warning")
+            return
+
+        self._workflow_control.request_skip()
+        self._phase_runner_terminate_active()
+        self.notify("Skipping current phase...", severity="warning")
+        self._log_system("Phase skip requested — terminating current agent.", level="warning")
 
     def action_toggle_log(self) -> None:
         if self._dashboard_screen is not None:
@@ -312,7 +342,11 @@ class PlanoraTUI(App[None]):
         from planora.agents.registry import AgentRegistry
         from planora.agents.runner import AgentRunner
         from planora.core.workspace import WorkspaceManager
+        from planora.workflow.engine import WorkflowControl
         from planora.workflow.plan import PlanWorkflow
+
+        control = WorkflowControl()
+        self._workflow_control = control
 
         workflow = PlanWorkflow(
             workspace=WorkspaceManager(self._project_root),
@@ -323,11 +357,13 @@ class PlanoraTUI(App[None]):
             auditors=self._auditors,
             audit_rounds=self._audit_rounds,
             max_concurrency=self._max_concurrency,
+            control=control,
             plan_template_path=self._plan_template_path,
             audit_template_path=self._audit_template_path,
             refine_template_path=self._refine_template_path,
             prompt_base_dir=self._prompt_base_dir,
         )
+        self._workflow_phase_runner = workflow._phase_runner
 
         try:
             result = await workflow.run(self.task_input)
@@ -383,6 +419,13 @@ class PlanoraTUI(App[None]):
         self._log_system("Workflow starting.")
 
         self._workflow_worker = self._execute_workflow()
+
+    def _phase_runner_terminate_active(self) -> None:
+        """Terminate active subprocess in the current phase (for skip-phase support)."""
+        from planora.workflow.engine import PhaseRunner
+
+        if isinstance(self._workflow_phase_runner, PhaseRunner):
+            self._workflow_phase_runner.terminate_active_processes()
 
     def _request_workflow_cancel(self, reason: str) -> None:
         if not self._workflow_is_active():
@@ -484,6 +527,9 @@ class PlanoraTUI(App[None]):
     def _reset_runtime_state(self) -> None:
         self._shutting_down = False
         self._exit_when_stopped = False
+        self._workflow_control = None
+        self._workflow_phase_runner = None
+        self._is_paused = False
         self._workflow_started_at = None
         self._phase_display_label = "Waiting"
         self._current_phase_key = None

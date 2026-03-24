@@ -47,6 +47,7 @@ class StreamEvent(BaseModel):
     duration_ms: int | None = None
     num_turns: int | None = None
     session_id: str | None = None
+    token_usage: dict[str, int] | None = None
 
     # Retry/rate limit fields
     retry_attempt: int | None = None
@@ -106,6 +107,7 @@ class AgentMonitorSnapshot(BaseModel):
     last_tool: str | None = None
     last_tool_detail: str | None = None
     cost_usd: Decimal | None = None
+    token_usage: dict[str, int] | None = None
     text_count: int = 0
     subagent_count: int = 0
     session_id: str | None = None

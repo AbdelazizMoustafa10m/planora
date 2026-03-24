@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
     from planora.core.events import AgentMonitorSnapshot
+    from planora.observability.hooks import ClaudeHooksManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,19 +47,28 @@ class AgentRunner:
         on_event: Callable[[StreamEvent], None] | None = None,
         on_snapshot: Callable[[AgentMonitorSnapshot], None] | None = None,
         snapshot_interval: float | None = None,
+        stall_check_interval: float = 5.0,
         on_process_start: Callable[[asyncio.subprocess.Process], None] | None = None,
         on_process_end: Callable[[asyncio.subprocess.Process], None] | None = None,
+        hooks_manager: ClaudeHooksManager | None = None,
     ) -> AgentResult:
         """Run the agent subprocess and return a fully-populated AgentResult."""
         # Step 1 — Build command
         cmd = self._build_command(agent, prompt, output_path, mode)
 
-        # Step 2 — Set up environment
+        # Step 2 — Install Claude hooks when a manager is provided for a Claude agent.
+        # install_hooks() creates the hook scripts on disk (side effect); cleanup() removes
+        # them in the finally block so no stale scripts are left behind.
+        is_hooks_installed = hooks_manager is not None and agent.name == "claude"
+        if is_hooks_installed and hooks_manager is not None:
+            hooks_manager.install_hooks(agent)
         env = {**os.environ, **agent.env_vars}
 
         # Step 3 — Handle dry_run
         if dry_run:
             logger.info("dry_run=True, skipping subprocess. Command: %s", cmd)
+            if is_hooks_installed and hooks_manager is not None:
+                hooks_manager.cleanup()
             return AgentResult(
                 agent_name=agent.name,
                 output_path=output_path,
@@ -90,6 +100,7 @@ class AgentRunner:
         stall_detector = StallDetector(
             normal_timeout=agent.stall_timeout,
             deep_timeout=agent.deep_tool_timeout,
+            check_interval=stall_check_interval,
         )
         monitor = AgentMonitor(agent.name)
 
@@ -152,16 +163,19 @@ class AgentRunner:
             # Wait for secondary reader to finish
             await secondary_task
 
-            # Step 7 — Write stderr to log file
-            log_path.write_text("".join(stderr_chunks), encoding="utf-8")
+            # Step 7 — Write stderr to log file (offloaded to thread pool)
+            await asyncio.to_thread(
+                log_path.write_text, "".join(stderr_chunks), encoding="utf-8"
+            )
 
             # Step 8 — Wait for process exit
             exit_code = await proc.wait()
 
             duration = datetime.now() - started_at
 
-            # Step 6 — Extract output
-            _write_output(
+            # Step 6 — Extract output (offloaded to thread pool)
+            await asyncio.to_thread(
+                _write_output,
                 agent=agent,
                 output_path=output_path,
                 text_chunks=text_chunks,
@@ -173,6 +187,8 @@ class AgentRunner:
             if on_snapshot is not None:
                 on_snapshot(snap)
 
+            output_empty = await asyncio.to_thread(_check_output_empty, output_path)
+
             return AgentResult(
                 agent_name=agent.name,
                 output_path=output_path,
@@ -181,9 +197,11 @@ class AgentRunner:
                 exit_code=exit_code,
                 duration=duration,
                 cost_usd=snap.cost_usd,
+                token_usage=snap.token_usage,
                 num_turns=snap.num_turns,
                 session_id=snap.session_id,
-                output_empty=not output_path.exists() or output_path.stat().st_size == 0,
+                output_empty=output_empty,
+                error=_derive_error(exit_code, stderr_chunks) if exit_code != 0 else None,
             )
         except BaseException:
             await _shutdown_process(proc)
@@ -193,6 +211,9 @@ class AgentRunner:
             await _cancel_task(secondary_task)
             if on_process_end is not None:
                 on_process_end(proc)
+            # Clean up hook scripts created for this agent run
+            if is_hooks_installed and hooks_manager is not None:
+                hooks_manager.cleanup()
 
     @staticmethod
     def _build_command(
@@ -225,13 +246,21 @@ async def _tee_to_file(
     path: Path,
     collector: list[str] | None = None,
 ) -> AsyncIterator[str]:
-    """Yield each line from raw while also writing it to path (tee for archival)."""
-    with path.open("w", encoding="utf-8") as fh:
+    """Yield each line from raw while also writing it to path (tee for archival).
+
+    The file is opened via asyncio.to_thread to avoid blocking the event loop
+    on the file-system open() call. Individual line writes are OS-buffered and
+    small enough that they do not cause measurable event-loop stalls.
+    """
+    fh = await asyncio.to_thread(path.open, "w", encoding="utf-8")
+    try:
         async for line in raw:
             if collector is not None:
                 collector.append(line)
             fh.write(line)
             yield line
+    finally:
+        await asyncio.to_thread(fh.close)
 
 
 def _write_output(
@@ -312,3 +341,22 @@ async def _shutdown_process(proc: asyncio.subprocess.Process) -> None:
     except TimeoutError:
         proc.kill()
         await proc.wait()
+
+
+def _check_output_empty(path: Path) -> bool:
+    """Return True when path is absent or has zero bytes (blocking; run in thread pool)."""
+    return not path.exists() or path.stat().st_size == 0
+
+
+def _derive_error(exit_code: int, stderr_chunks: list[str]) -> str:
+    """Build a diagnostic error message from exit code and available stderr content.
+
+    Returns the last few lines of stderr when available, otherwise a generic
+    message quoting the exit code so callers always get actionable context.
+    """
+    if stderr_chunks:
+        # Take up to the last 10 non-blank lines from stderr for conciseness.
+        non_blank = [line.rstrip() for line in stderr_chunks if line.strip()]
+        tail = non_blank[-10:] if len(non_blank) > 10 else non_blank
+        return "\n".join(tail) if tail else f"Process exited with code {exit_code}"
+    return f"Process exited with code {exit_code}"

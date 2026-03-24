@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import gzip
 import re
 import shutil
@@ -9,10 +10,21 @@ from types import TracebackType  # noqa: TCH003
 
 
 class WorkspaceManager:
-    """Manages .plan-workspace/ and reports/plans/ directories."""
+    """Manages .plan-workspace/ and reports/plans/ directories.
 
-    def __init__(self, project_root: Path) -> None:
+    The archive root is ``reports_dir / "plans"`` where ``reports_dir`` is a
+    path (relative to ``project_root`` or absolute) sourced from
+    ``PlanораSettings.effective_reports_dir``.  When not supplied it defaults
+    to ``project_root / "reports"``, preserving the original behaviour.
+    """
+
+    def __init__(self, project_root: Path, reports_dir: Path | None = None) -> None:
         self._project_root = project_root
+        # Relative paths are anchored to project_root; absolute paths are used as-is.
+        reports_path = reports_dir if reports_dir is not None else Path("reports")
+        self._reports_root = (
+            reports_path if reports_path.is_absolute() else project_root / reports_path
+        )
         self._task_slug: str = "untitled"
         self._timestamp: str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
@@ -23,8 +35,8 @@ class WorkspaceManager:
 
     @property
     def archive_dir(self) -> Path:
-        """Archive: {project_root}/reports/plans/{timestamp}_{slug}/"""
-        return self._project_root / "reports" / "plans" / f"{self._timestamp}_{self._task_slug}"
+        """Archive: {reports_root}/plans/{timestamp}_{slug}/"""
+        return self._reports_root / "plans" / f"{self._timestamp}_{self._task_slug}"
 
     def set_task_slug(self, description: str) -> None:
         """Generate slug from task description: first 40 chars, lowercase, non-alnum → hyphens."""
@@ -56,6 +68,18 @@ class WorkspaceManager:
         if not path.exists():
             return None
         return path.read_text(encoding="utf-8")
+
+    async def aread_file(self, name: str) -> str | None:
+        """Async variant of read_file; offloads blocking I/O to the thread pool."""
+        return await asyncio.to_thread(self.read_file, name)
+
+    async def awrite_file(self, name: str, content: str) -> Path:
+        """Async variant of write_file; offloads blocking I/O to the thread pool."""
+        return await asyncio.to_thread(self.write_file, name, content)
+
+    async def aarchive(self) -> Path:
+        """Async variant of archive; offloads blocking I/O to the thread pool."""
+        return await asyncio.to_thread(self.archive)
 
     def archive(self) -> Path:
         """

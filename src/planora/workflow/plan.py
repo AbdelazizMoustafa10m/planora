@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from decimal import Decimal
@@ -17,12 +18,13 @@ from planora.prompts.plan import (
     build_plan_prompt,
     build_refinement_prompt,
 )
-from planora.workflow.engine import PhaseRunner
+from planora.workflow.engine import PhaseRunner, WorkflowControl
 from planora.workflow.report import generate_plan_report
 
 if TYPE_CHECKING:
     from planora.agents.registry import AgentRegistry
     from planora.agents.runner import AgentRunner
+    from planora.core.config import PlanораSettings
     from planora.core.events import UICallback
     from planora.core.workspace import WorkspaceManager
 
@@ -49,13 +51,21 @@ class PlanWorkflow:
         max_concurrency: int = 3,
         dry_run: bool = False,
         skip_planning: bool = False,
+        skip_refinement: bool = False,
         reuse_workspace: bool = False,
+        completed_rounds: set[int] | None = None,
         snapshot_interval: float | None = None,
+        stall_check_interval: float = 5.0,
+        control: WorkflowControl | None = None,
         plan_template_path: Path | None = None,
         audit_template_path: Path | None = None,
         refine_template_path: Path | None = None,
         prompt_base_dir: Path = Path("."),
+        settings: PlanораSettings | None = None,
     ) -> None:
+        from planora.observability.hooks import ClaudeHooksManager
+        from planora.observability.telemetry import PlanoraTelemetry
+
         self._workspace = workspace
         self._registry = registry
         self._ui = ui
@@ -65,16 +75,31 @@ class PlanWorkflow:
         self._max_concurrency = max_concurrency
         self._dry_run = dry_run
         self._skip_planning = skip_planning
+        self._skip_refinement = skip_refinement
         self._reuse_workspace = reuse_workspace
+        self._completed_rounds: set[int] = (
+            completed_rounds if completed_rounds is not None else set()
+        )
         self._plan_template_path = plan_template_path
         self._audit_template_path = audit_template_path
         self._refine_template_path = refine_template_path
         self._prompt_base_dir = prompt_base_dir
+        self._control = control
+        _telemetry = PlanoraTelemetry(settings) if settings is not None else None
+        _hooks_manager = (
+            ClaudeHooksManager(workspace.workspace_dir.parent)
+            if settings is not None
+            else None
+        )
         self._phase_runner = PhaseRunner(
             runner,
             ui,
             max_concurrency,
             snapshot_interval=snapshot_interval,
+            stall_check_interval=stall_check_interval,
+            control=control,
+            telemetry=_telemetry,
+            hooks_manager=_hooks_manager,
         )
         self._started_at: datetime | None = None
         self._task_content: str | None = None
@@ -113,9 +138,9 @@ class PlanWorkflow:
         """
         started_at = datetime.now()
 
-        task_content = self._read_task_input(task_input)
+        task_content = await self._read_task_input(task_input)
         self._preflight(task_content)
-        self._reset_run_state(task_content=task_content, started_at=started_at)
+        await self._areset_run_state(task_content=task_content, started_at=started_at)
 
         phases = self._phases
         agent_results = self._agent_results
@@ -148,6 +173,10 @@ class PlanWorkflow:
                 success=False,
             )
 
+        # Pause checkpoint -- honoured at each inter-phase boundary
+        if self._control is not None:
+            await self._control.wait_if_paused()
+
         # ----------------------------------------------------------------
         # Audit / refine rounds
         # ----------------------------------------------------------------
@@ -155,6 +184,9 @@ class PlanWorkflow:
             audit_phase = await self.phase_audit(round_num)
             self._record_phase_result(audit_phase)
             self._emit_pipeline_status(phases)
+
+            if self._control is not None:
+                await self._control.wait_if_paused()
 
             # Collect non-empty audit results for refinement
             audit_reports = dict(self._round_audit_reports.get(round_num, {}))
@@ -167,10 +199,13 @@ class PlanWorkflow:
                 continue
 
             # b) Refine phase
-            plan_content = self._current_plan_content()
+            plan_content = await self._current_plan_content()
             refine_phase = await self.phase_refine(round_num)
             self._record_phase_result(refine_phase)
             self._emit_pipeline_status(phases)
+
+            if self._control is not None:
+                await self._control.wait_if_paused()
 
             if refine_phase.status == PhaseStatus.FAILED:
                 self._ui.on_log(
@@ -179,7 +214,7 @@ class PlanWorkflow:
                     "Using previous plan content as final.",
                 )
                 # Copy previous plan to final-plan.md so downstream always has it
-                self._copy_to_final_plan(plan_content)
+                await self._copy_to_final_plan(plan_content)
 
             # Accumulate current round audits into prior_audits for next round
             self._prior_audits[f"Round {round_num}"] = "\n\n".join(audit_reports.values())
@@ -192,7 +227,7 @@ class PlanWorkflow:
         # ----------------------------------------------------------------
         # Phase: report (non-fatal)
         # ----------------------------------------------------------------
-        report_phase_result = self.phase_report()
+        report_phase_result = await self.phase_report()
         if report_phase_result is not None:
             phases.append(report_phase_result)
 
@@ -234,7 +269,7 @@ class PlanWorkflow:
 
         prompt = build_audit_prompt(
             round=round,
-            plan_content=self._current_plan_content(),
+            plan_content=await self._current_plan_content(),
             task_content=self._require_task_content(),
             claude_md=self._claude_md,
             prior_audits=self._prior_audits or None,
@@ -247,7 +282,7 @@ class PlanWorkflow:
             prompt,
             round,
         )
-        self._round_audit_reports[round] = self._collect_audit_reports(round, phase_result)
+        self._round_audit_reports[round] = await self._collect_audit_reports(round, phase_result)
         return phase_result
 
     async def phase_refine(self, round: int) -> PhaseResult:
@@ -259,7 +294,7 @@ class PlanWorkflow:
 
         prompt = build_refinement_prompt(
             round=round,
-            plan_content=self._current_plan_content(),
+            plan_content=await self._current_plan_content(),
             task_content=self._require_task_content(),
             claude_md=self._claude_md,
             audit_reports=audit_reports,
@@ -277,9 +312,9 @@ class PlanWorkflow:
             self._dry_run,
         )
 
-    def phase_report(self) -> PhaseResult | None:
+    async def phase_report(self) -> PhaseResult | None:
         """Generate the report and archive for the current run state."""
-        report_phase_result, report_path, archive_path = self._run_report_phase(
+        report_phase_result, report_path, archive_path = await self._run_report_phase(
             phases=self._phases,
             agent_results=self._agent_results,
             final_plan_path=self._final_plan_path,
@@ -314,18 +349,18 @@ class PlanWorkflow:
         self._workspace.write_file("task-input.md", task_content)
 
     @staticmethod
-    def _read_task_input(task_input: str | Path) -> str:
-        """Return task content as a string, reading from file if a Path is given."""
+    async def _read_task_input(task_input: str | Path) -> str:
+        """Return task content as a string, reading from file via thread pool if a Path is given."""
         if isinstance(task_input, Path):
-            return task_input.read_text(encoding="utf-8")
+            return await asyncio.to_thread(task_input.read_text, encoding="utf-8")
         return task_input
 
-    def _read_claude_md(self) -> str:
+    async def _read_claude_md(self) -> str:
         """Read CLAUDE.md from the project root. Returns empty string if absent."""
         claude_md_path = self._workspace.workspace_dir.parent / "CLAUDE.md"
         if not claude_md_path.exists():
             return ""
-        return claude_md_path.read_text(encoding="utf-8")
+        return await asyncio.to_thread(claude_md_path.read_text, encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Private — phase runners
@@ -353,7 +388,7 @@ class PlanWorkflow:
             self._dry_run,
         )
 
-    def _run_report_phase(
+    async def _run_report_phase(
         self,
         phases: list[PhaseResult],
         agent_results: dict[str, list[AgentResult]],
@@ -409,7 +444,7 @@ class PlanWorkflow:
         )
         return self._workspace.workspace_dir / filename
 
-    def _collect_audit_reports(
+    async def _collect_audit_reports(
         self,
         round_num: int,
         audit_phase: PhaseResult,
@@ -424,21 +459,21 @@ class PlanWorkflow:
                 if round_num == 1
                 else f"audit-{agent_result.agent_name}-r{round_num}.md"
             )
-            content = self._workspace.read_file(file_key)
-            if content and content.strip():
-                reports[agent_result.agent_name] = content
+            file_content = await self._workspace.aread_file(file_key)
+            if file_content and file_content.strip():
+                reports[agent_result.agent_name] = file_content
         return reports
 
-    def _copy_to_final_plan(self, plan_content: str) -> None:
+    async def _copy_to_final_plan(self, plan_content: str) -> None:
         """Write plan_content to final-plan.md (fallback when refine fails)."""
-        self._workspace.write_file("final-plan.md", plan_content)
+        await self._workspace.awrite_file("final-plan.md", plan_content)
 
-    def _current_plan_content(self) -> str:
+    async def _current_plan_content(self) -> str:
         """Return the latest available plan text for audit/refine inputs."""
-        plan_content = self._workspace.read_file("final-plan.md")
+        plan_content = await self._workspace.aread_file("final-plan.md")
         if plan_content is not None:
             return plan_content
-        return self._workspace.read_file("initial-plan.md") or ""
+        return await self._workspace.aread_file("initial-plan.md") or ""
 
     def _resolve_final_plan_path(self) -> Path | None:
         """Return path to final-plan.md if it exists, else initial-plan.md."""
@@ -454,11 +489,11 @@ class PlanWorkflow:
     # Private — result construction
     # ------------------------------------------------------------------
 
-    def _reset_run_state(self, *, task_content: str, started_at: datetime) -> None:
+    async def _areset_run_state(self, *, task_content: str, started_at: datetime) -> None:
         """Reset per-run state before entering the workflow pipeline."""
         self._started_at = started_at
         self._task_content = task_content
-        self._claude_md = self._read_claude_md()
+        self._claude_md = await self._read_claude_md()
         self._phases = []
         self._agent_results = {}
         self._prior_audits = {}

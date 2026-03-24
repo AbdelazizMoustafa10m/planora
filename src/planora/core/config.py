@@ -382,6 +382,9 @@ class PlanораSettings(BaseSettings):
     telemetry_service_name: str = _DEFAULT_TELEMETRY_SERVICE_NAME
     telemetry_log_prompts: bool = False
 
+    # Per-model token pricing in USD, keyed by model name then "input"/"output".
+    # Example: {"claude-opus-4-6": {"input": "0.000015", "output": "0.000075"}}
+    # Reserved for future cost-tracking integration; not yet consumed at runtime.
     token_pricing: dict[str, dict[str, Decimal]] = Field(default_factory=dict)
 
     # New nested fields

@@ -137,13 +137,26 @@ def _build_pipeline_config_section(
     auditors: list[str],
     audit_rounds: int,
     max_concurrency: int,
+    planner_model: str = "",
+    auditor_models: dict[str, str] | None = None,
 ) -> str:
-    auditor_list = ", ".join(auditors) if auditors else "none"
+    planner_cell = f"{planner} ({planner_model})" if planner_model else planner
+    if auditors:
+        if auditor_models:
+            auditor_parts = [
+                f"{a} ({auditor_models[a]})" if a in auditor_models else a
+                for a in auditors
+            ]
+        else:
+            auditor_parts = list(auditors)
+        auditor_list = ", ".join(auditor_parts)
+    else:
+        auditor_list = "none"
     return (
         "## Pipeline Configuration\n\n"
         "| Setting          | Value                          |\n"
         "|------------------|--------------------------------|\n"
-        f"| Planner          | {planner}                      |\n"
+        f"| Planner          | {planner_cell}                 |\n"
         f"| Auditors         | {auditor_list}                 |\n"
         f"| Audit Rounds     | {audit_rounds}                 |\n"
         f"| Concurrency      | {max_concurrency}              |\n"
@@ -179,6 +192,7 @@ def _build_audit_results_section(
     auditors: list[str],
     audit_rounds: int,
     phases: list[PhaseResult],
+    auditor_models: dict[str, str] | None = None,
 ) -> str:
     lines: list[str] = ["## Audit Results\n"]
 
@@ -197,8 +211,11 @@ def _build_audit_results_section(
             file_key = f"audit-{agent}.md" if round_num == 1 else f"audit-{agent}-r{round_num}.md"
             content = workspace.read_file(file_key)
 
+            model = auditor_models.get(agent, "") if auditor_models else ""
+            agent_heading = f"{agent} ({model})" if model else agent
+
             if content is None or not content.strip():
-                lines.append(f"#### {agent} — FAILED (no output)\n\n")
+                lines.append(f"#### {agent_heading} — FAILED (no output)\n\n")
                 continue
 
             verdict = _extract_verdict(content)
@@ -212,7 +229,7 @@ def _build_audit_results_section(
             ]
             severity_str = ", ".join(severity_parts) if severity_parts else "none"
 
-            lines.append(f"#### {agent}\n\n")
+            lines.append(f"#### {agent_heading}\n\n")
             lines.append(f"- **Verdict:** {verdict}\n")
             lines.append(f"- **Findings:** {finding_count}\n")
             lines.append(f"- **Severities:** {severity_str}\n\n")
@@ -305,6 +322,8 @@ def generate_plan_report(
     auditors: list[str],
     audit_rounds: int,
     max_concurrency: int = 1,
+    planner_model: str = "",
+    auditor_models: dict[str, str] | None = None,
 ) -> Path:
     """Generate ``plan-report.md`` and write it to the workspace.
 
@@ -321,6 +340,10 @@ def generate_plan_report(
         auditors:         Ordered list of auditor agent names.
         audit_rounds:     Number of audit/refine rounds that were configured.
         max_concurrency:  Maximum number of agents run in parallel (default 1).
+        planner_model:    Model identifier for the planner agent (e.g.
+                          ``"claude-opus-4-6"``).  Empty string when unknown.
+        auditor_models:   Mapping of auditor agent name to its model identifier.
+                          ``None`` or absent keys render without model suffix.
 
     Returns:
         :class:`Path` pointing to the written ``plan-report.md`` inside the
@@ -342,6 +365,8 @@ def generate_plan_report(
         auditors=auditors,
         audit_rounds=audit_rounds,
         max_concurrency=max_concurrency,
+        planner_model=planner_model,
+        auditor_models=auditor_models,
     )
 
     phase_section = _build_phase_summary_section(
@@ -354,6 +379,7 @@ def generate_plan_report(
         auditors=auditors,
         audit_rounds=audit_rounds,
         phases=plan_result.phases,
+        auditor_models=auditor_models,
     )
 
     files_section = _build_files_created_section(workspace)

@@ -47,6 +47,7 @@ class AgentMonitor:
         self._recent_tools: deque[ToolExecution] = deque(maxlen=max_recent_tools)
         self._counters = ToolCounters()
         self._cost_usd: Decimal | None = None
+        self._token_usage: dict[str, int] | None = None
         self._text_count = 0
         self._subagent_count = 0
         self._session_id: str | None = None
@@ -119,6 +120,8 @@ class AgentMonitor:
             self._num_turns = event.num_turns
         if event.session_id is not None:
             self._session_id = event.session_id
+        if event.token_usage is not None:
+            self._token_usage = event.token_usage
         self._state = AgentState.COMPLETED
 
     def _handle_rate_limit(self, event: StreamEvent) -> None:  # noqa: ARG002
@@ -178,6 +181,7 @@ class AgentMonitor:
             last_tool=last_tool,
             last_tool_detail=last_tool_detail,
             cost_usd=self._cost_usd,
+            token_usage=self._token_usage,
             text_count=self._text_count,
             subagent_count=self._subagent_count,
             session_id=self._session_id,

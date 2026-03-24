@@ -41,6 +41,42 @@ def _require_existing_initial_plan(root: Path) -> None:
     raise typer.Exit(1)
 
 
+def _detect_completed_rounds(
+    workspace_dir: Path,
+    auditors: list[str],
+    total_rounds: int,
+) -> set[int]:
+    """Return the set of round numbers whose audit outputs are all present and non-empty.
+
+    A round is considered complete when every auditor in the list has produced a
+    non-empty audit file for that round.  The final-plan.md produced by refinement
+    is checked for round 1; for subsequent rounds the refined plan overwrites the
+    same file so we only test audit file presence.
+    """
+    completed: set[int] = set()
+    if not auditors:
+        return completed
+    for round_num in range(1, total_rounds + 1):
+        audit_files_present = all(
+            _audit_file_nonempty(workspace_dir, auditor, round_num)
+            for auditor in auditors
+        )
+        if audit_files_present:
+            completed.add(round_num)
+    return completed
+
+
+def _audit_file_nonempty(workspace_dir: Path, auditor: str, round_num: int) -> bool:
+    """Return True when the audit output file for (auditor, round) is present and non-empty."""
+    filename = (
+        f"audit-{auditor}.md"
+        if round_num == 1
+        else f"audit-{auditor}-r{round_num}.md"
+    )
+    path = workspace_dir / filename
+    return path.exists() and path.stat().st_size > 0
+
+
 def _option_was_supplied(ctx: typer.Context, name: str) -> bool:
     """Return True when an option came from the command line instead of its default."""
     return ctx.get_parameter_source(name) != ParameterSource.DEFAULT
@@ -216,7 +252,7 @@ def plan_run(
     auditor_list = list(resolved_auditors)
     if skip_audit:
         auditor_list = []
-    effective_rounds = 0 if skip_refinement else resolved_audit_rounds
+    effective_rounds = resolved_audit_rounds
     if skip_planning:
         _require_existing_initial_plan(root)
 
@@ -280,7 +316,7 @@ def plan_run(
     ui = EventsOutputCallback() if output_format == "events" else CLICallback()
 
     # 11. Build and run the workflow
-    workspace = WorkspaceManager(root)
+    workspace = WorkspaceManager(root, reports_dir=Path(settings.effective_reports_dir))
     workflow = PlanWorkflow(
         workspace=workspace,
         registry=registry,
@@ -292,12 +328,15 @@ def plan_run(
         max_concurrency=resolved_concurrency,
         dry_run=dry_run,
         skip_planning=skip_planning,
+        skip_refinement=skip_refinement,
         reuse_workspace=skip_planning,
         snapshot_interval=settings.effective_cli_status_interval,
+        stall_check_interval=settings.effective_monitor_interval,
         plan_template_path=settings.prompts.plan,
         audit_template_path=settings.prompts.audit,
         refine_template_path=settings.prompts.refine,
         prompt_base_dir=settings.effective_prompt_base_dir,
+        settings=settings,
     )
 
     result = asyncio.run(workflow.run(task_content))
@@ -319,6 +358,127 @@ def plan_run(
                 console.print(f"  Error: {phase.error}")
     raise typer.Exit(1)
 
+
+
+
+@plan_app.command("wizard")
+def plan_wizard(
+    planner: Annotated[str, typer.Option(help="Planner agent")] = "claude",
+    auditors: Annotated[
+        str, typer.Option(help="Comma-separated auditor list")
+    ] = "gemini,codex",
+    audit_rounds: Annotated[
+        int, typer.Option(help="Audit+refine cycles (1 or 2)", min=1, max=2)
+    ] = 1,
+    concurrency: Annotated[
+        int, typer.Option(help="Max parallel auditors", min=1)
+    ] = 3,
+    dry_run: Annotated[
+        bool, typer.Option(help="Show commands without executing")
+    ] = False,
+    output_format: Annotated[
+        str, typer.Option(help="Output format: text (default), events (JSONL on stderr)")
+    ] = "text",
+    project_root: Annotated[
+        Path | None, typer.Option(help="Override project root detection")
+    ] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option(help="Activate named profile from planora.toml"),
+    ] = None,
+    config: Annotated[
+        list[str] | None,
+        typer.Option(help="Override config key=value (TOML syntax, dot notation)"),
+    ] = None,
+) -> None:
+    """Launch the interactive task wizard and run the planning workflow."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        console.print("[red]Error:[/] wizard requires an interactive terminal")
+        raise typer.Exit(1)
+
+    task = Prompt.ask("[bold]Enter task description[/bold]")
+    if not task.strip():
+        console.print("[red]No task provided[/red]")
+        raise typer.Exit(1)
+
+    try:
+        settings = PlanораSettings()
+        if profile is not None:
+            settings = settings.with_profile(profile)
+        if config:
+            settings = settings.with_config_overrides(config)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    resolved_planner = planner
+    resolved_auditors = parse_auditor_csv(auditors)
+    root = project_root.resolve() if project_root is not None else settings.effective_project_root
+
+    from planora.agents.registry import AgentRegistry
+    from planora.agents.runner import AgentRunner
+    from planora.cli.callbacks import CLICallback, EventsOutputCallback
+    from planora.core.events import PhaseStatus
+    from planora.core.workspace import WorkspaceManager
+    from planora.prompts.plan import configure_prompt_templates
+    from planora.workflow.plan import PlanWorkflow
+
+    configure_prompt_templates(
+        plan=settings.prompts.plan,
+        audit=settings.prompts.audit,
+        refine=settings.prompts.refine,
+        base_dir=settings.effective_prompt_base_dir,
+    )
+    registry = AgentRegistry.from_settings(settings)
+    runner = AgentRunner()
+
+    missing = registry.validate([resolved_planner])
+    if missing:
+        console.print(
+            f"[red]Planner '{resolved_planner}' not available (binary not on PATH)[/red]"
+        )
+        raise typer.Exit(1)
+
+    ui: CLICallback | EventsOutputCallback
+    ui = EventsOutputCallback() if output_format == "events" else CLICallback()
+
+    workspace = WorkspaceManager(root, reports_dir=Path(settings.effective_reports_dir))
+    workflow = PlanWorkflow(
+        workspace=workspace,
+        registry=registry,
+        runner=runner,
+        ui=ui,
+        planner=resolved_planner,
+        auditors=resolved_auditors,
+        audit_rounds=audit_rounds,
+        max_concurrency=concurrency,
+        dry_run=dry_run,
+        snapshot_interval=settings.effective_cli_status_interval,
+        stall_check_interval=settings.effective_monitor_interval,
+        plan_template_path=settings.prompts.plan,
+        audit_template_path=settings.prompts.audit,
+        refine_template_path=settings.prompts.refine,
+        prompt_base_dir=settings.effective_prompt_base_dir,
+        settings=settings,
+    )
+
+    result = asyncio.run(workflow.run(task))
+
+    if result.success:
+        console.print("\n[bold green]Planning complete![/bold green]")
+        if result.final_plan_path:
+            console.print(f"  Plan: {result.final_plan_path}")
+        if result.archive_path:
+            console.print(f"  Archive: {result.archive_path}")
+        return
+
+    console.print("\n[bold red]Planning failed[/bold red]")
+    for phase in result.phases:
+        if phase.status == PhaseStatus.FAILED:
+            console.print(f"  Failed phase: {phase.name}")
+            if phase.error:
+                console.print(f"  Error: {phase.error}")
+    raise typer.Exit(1)
 
 @plan_app.command("resume")
 def plan_resume(
@@ -396,10 +556,11 @@ def plan_resume(
     has_r2_audits = any(workspace_dir.glob("audit-*-r2.md"))
     effective_rounds = 2 if has_r2_audits else 1
 
-    # If final plan exists, auditing is already done — skip audit+refine
-    if has_final:
-        effective_auditors = []
-        effective_rounds = 0
+    # Detect which audit+refine rounds are fully complete so the workflow
+    # can skip them rather than re-running or wiping their outputs.
+    completed_rounds = _detect_completed_rounds(
+        workspace_dir, effective_auditors, effective_rounds
+    )
 
     configure_prompt_templates(
         plan=settings.prompts.plan,
@@ -412,9 +573,9 @@ def plan_resume(
     ui: CLICallback | EventsOutputCallback
     ui = EventsOutputCallback() if output_format == "events" else CLICallback()
 
-    # 9. Run workflow against the existing workspace, preserving completed
-    #    plan artifacts when resuming from a later phase.
-    workspace = WorkspaceManager(root)
+    # 9. Run workflow against the existing workspace; always reuse=True so
+    #    partial outputs produced in a previous run are never wiped.
+    workspace = WorkspaceManager(root, reports_dir=Path(settings.effective_reports_dir))
     workflow = PlanWorkflow(
         workspace=workspace,
         registry=AgentRegistry.from_settings(settings),
@@ -425,12 +586,15 @@ def plan_resume(
         audit_rounds=effective_rounds,
         dry_run=False,
         skip_planning=has_initial,
-        reuse_workspace=has_initial,
+        reuse_workspace=True,
+        completed_rounds=completed_rounds,
         snapshot_interval=settings.effective_cli_status_interval,
+        stall_check_interval=settings.effective_monitor_interval,
         plan_template_path=settings.prompts.plan,
         audit_template_path=settings.prompts.audit,
         refine_template_path=settings.prompts.refine,
         prompt_base_dir=settings.effective_prompt_base_dir,
+        settings=settings,
     )
 
     result = asyncio.run(workflow.run(task_content))

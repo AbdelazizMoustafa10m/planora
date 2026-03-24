@@ -1,16 +1,93 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path  # noqa: TC003 — used at runtime in path operations
+from typing import TYPE_CHECKING
 
 from planora.agents.registry import AgentConfig, AgentMode
 from planora.agents.runner import (
     AgentRunner,  # noqa: TC001 — stored as instance attribute, called at runtime
 )
 from planora.core.events import AgentResult, PhaseResult, PhaseStatus, UICallback
+
+if TYPE_CHECKING:
+    from planora.observability.hooks import ClaudeHooksManager
+    from planora.observability.telemetry import PlanoraTelemetry
+
+
+
+class WorkflowControl:
+    """Shared control object that allows the TUI to pause or skip phases.
+
+    Thread-safety note: all methods are safe to call from the Textual worker
+    thread because asyncio.Event is loop-aware and the boolean skip flag is
+    set atomically before processes are terminated.
+    """
+
+    def __init__(self) -> None:
+        # Event is *set* when the workflow should run freely.
+        # Clearing it causes the workflow to block at the next inter-phase checkpoint.
+        self._resume_event: asyncio.Event | None = None
+        self._is_paused = False
+        self._skip_requested = False
+
+    # ------------------------------------------------------------------
+    # Lazy event initialisation — must be created inside the running loop
+    # ------------------------------------------------------------------
+
+    def _get_event(self) -> asyncio.Event:
+        if self._resume_event is None:
+            self._resume_event = asyncio.Event()
+            self._resume_event.set()  # start in running state
+        return self._resume_event
+
+    # ------------------------------------------------------------------
+    # TUI-facing control API
+    # ------------------------------------------------------------------
+
+    def pause(self) -> None:
+        """Pause the workflow before the next inter-phase checkpoint."""
+        if not self._is_paused:
+            self._is_paused = True
+            self._get_event().clear()
+
+    def resume(self) -> None:
+        """Resume a paused workflow."""
+        if self._is_paused:
+            self._is_paused = False
+            self._get_event().set()
+
+    def request_skip(self) -> None:
+        """Request that the current phase be skipped and processes terminated."""
+        self._skip_requested = True
+
+    def clear_skip(self) -> None:
+        """Clear the skip flag after the engine has handled the skip."""
+        self._skip_requested = False
+
+    # ------------------------------------------------------------------
+    # Engine-facing query API
+    # ------------------------------------------------------------------
+
+    @property
+    def is_paused(self) -> bool:
+        return self._is_paused
+
+    @property
+    def skip_requested(self) -> bool:
+        return self._skip_requested
+
+    async def wait_if_paused(self) -> None:
+        """Block until the workflow is no longer paused.
+
+        Called by PlanWorkflow between phases so pause takes effect at a clean
+        boundary rather than mid-agent.
+        """
+        await self._get_event().wait()
 
 
 class PhaseRunner:
@@ -27,6 +104,10 @@ class PhaseRunner:
         ui: UICallback,
         max_concurrency: int = 3,
         snapshot_interval: float | None = None,
+        stall_check_interval: float = 5.0,
+        control: WorkflowControl | None = None,
+        telemetry: PlanoraTelemetry | None = None,
+        hooks_manager: ClaudeHooksManager | None = None,
     ) -> None:
         self._runner = runner
         self._ui = ui
@@ -34,6 +115,10 @@ class PhaseRunner:
         self._active_processes: list[asyncio.subprocess.Process] = []
         self._shutting_down = False
         self._snapshot_interval = snapshot_interval
+        self._stall_check_interval = stall_check_interval
+        self._control = control
+        self._telemetry = telemetry
+        self._hooks_manager = hooks_manager
 
     # ------------------------------------------------------------------
     # Signal handling
@@ -100,22 +185,29 @@ class PhaseRunner:
         if self._shutting_down:
             return _failed_phase(name, "Shutdown in progress")
 
+        if self._control is not None and self._control.skip_requested:
+            self._control.clear_skip()
+            return _skipped_phase(name, "Phase skipped by user request")
+
         self._ui.on_phase_start(name, name)
         self._ui.on_agent_start(agent.name, name)
 
         started_at = datetime.now()
-        result = await self._runner.run(
-            agent=agent,
-            prompt=prompt,
-            output_path=output_path,
-            mode=AgentMode.PLAN,
-            dry_run=dry_run,
-            on_event=lambda ev: self._ui.dispatch_agent_event(agent.name, ev),
-            on_snapshot=self._ui.on_snapshot,
-            snapshot_interval=self._snapshot_interval,
-            on_process_start=self._register_process,
-            on_process_end=self._unregister_process,
-        )
+        with _phase_span(self._telemetry, name, agent=agent.name):
+            result = await self._runner.run(
+                agent=agent,
+                prompt=prompt,
+                output_path=output_path,
+                mode=AgentMode.PLAN,
+                dry_run=dry_run,
+                on_event=lambda ev: self._ui.dispatch_agent_event(agent.name, ev),
+                on_snapshot=self._ui.on_snapshot,
+                snapshot_interval=self._snapshot_interval,
+                stall_check_interval=self._stall_check_interval,
+                on_process_start=self._register_process,
+                on_process_end=self._unregister_process,
+                hooks_manager=self._hooks_manager,
+            )
 
         self._ui.on_agent_end(agent.name, result)
 
@@ -157,18 +249,23 @@ class PhaseRunner:
         if self._shutting_down:
             return _failed_phase(name, "Shutdown in progress")
 
+        if self._control is not None and self._control.skip_requested:
+            self._control.clear_skip()
+            return _skipped_phase(name, "Phase skipped by user request")
+
         self._ui.on_phase_start(name, name)
 
         started_at = datetime.now()
 
-        coroutines = [
-            self._run_with_semaphore(cfg, prompt, output_path, dry_run)
-            for cfg, prompt, output_path in agents
-        ]
-        raw_results: list[AgentResult | BaseException] = await asyncio.gather(
-            *coroutines,
-            return_exceptions=True,
-        )
+        with _phase_span(self._telemetry, name):
+            coroutines = [
+                self._run_with_semaphore(cfg, prompt, output_path, dry_run)
+                for cfg, prompt, output_path in agents
+            ]
+            raw_results: list[AgentResult | BaseException] = await asyncio.gather(
+                *coroutines,
+                return_exceptions=True,
+            )
 
         agent_results: list[AgentResult] = []
         for (cfg, _prompt, output_path), outcome in zip(agents, raw_results, strict=True):
@@ -239,9 +336,17 @@ class PhaseRunner:
                 on_event=lambda ev: self._ui.dispatch_agent_event(agent.name, ev),
                 on_snapshot=self._ui.on_snapshot,
                 snapshot_interval=self._snapshot_interval,
+                stall_check_interval=self._stall_check_interval,
                 on_process_start=self._register_process,
                 on_process_end=self._unregister_process,
+                hooks_manager=self._hooks_manager,
             )
+
+    def terminate_active_processes(self) -> None:
+        """Send SIGTERM to all currently running subprocesses (used for skip-phase)."""
+        for proc in list(self._active_processes):
+            if proc.returncode is None:
+                proc.terminate()
 
     def _register_process(self, proc: asyncio.subprocess.Process) -> None:
         """Track a live subprocess so shutdown signals can reach it."""
@@ -258,10 +363,31 @@ class PhaseRunner:
 # ------------------------------------------------------------------
 
 
+def _phase_span(
+    telemetry: PlanoraTelemetry | None,
+    name: str,
+    *,
+    agent: str | None = None,
+) -> contextlib.AbstractContextManager[object]:
+    """Return a telemetry phase span, or a no-op context manager when disabled."""
+    if telemetry is None:
+        return contextlib.nullcontext()
+    return telemetry.phase_span(name, agent=agent)
+
+
 def _failed_phase(name: str, reason: str) -> PhaseResult:
     """Return a PhaseResult with FAILED status and no timing."""
     return PhaseResult(
         name=name,
         status=PhaseStatus.FAILED,
+        error=reason,
+    )
+
+
+def _skipped_phase(name: str, reason: str) -> PhaseResult:
+    """Return a PhaseResult with SKIPPED status and no timing."""
+    return PhaseResult(
+        name=name,
+        status=PhaseStatus.SKIPPED,
         error=reason,
     )

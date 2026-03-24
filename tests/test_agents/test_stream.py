@@ -22,6 +22,7 @@ def test_parse_claude_stream_events(claude_jsonl_lines) -> None:
     assert [event.event_type for event in events] == [
         StreamEventType.INIT,
         StreamEventType.TOOL_START,
+        StreamEventType.TOOL_EXEC,  # content_block_delta with input_json_delta
         StreamEventType.TOOL_DONE,
         StreamEventType.TEXT,
         StreamEventType.RESULT,
@@ -29,10 +30,10 @@ def test_parse_claude_stream_events(claude_jsonl_lines) -> None:
     assert events[0].session_id == "sess-123"
     assert events[1].tool_name == "Read"
     assert events[1].tool_id == "tb-1"
-    assert events[2].tool_detail == "foo.py"
-    assert events[3].text_preview == "# Plan\n\nAdd the requested tests."
-    assert events[4].cost_usd == Decimal("0.0123")
-    assert events[4].num_turns == 3
+    assert events[3].tool_detail == "foo.py"
+    assert events[4].text_preview == "# Plan\n\nAdd the requested tests."
+    assert events[5].cost_usd == Decimal("0.0123")
+    assert events[5].num_turns == 3
 
 
 def test_parse_codex_stream_events(codex_jsonl_lines) -> None:
@@ -41,13 +42,14 @@ def test_parse_codex_stream_events(codex_jsonl_lines) -> None:
     assert [event.event_type for event in events] == [
         StreamEventType.INIT,
         StreamEventType.TOOL_START,
+        StreamEventType.TOOL_EXEC,  # response.output_item.delta
         StreamEventType.TOOL_DONE,
         StreamEventType.TEXT,
         StreamEventType.RESULT,
     ]
     assert events[1].tool_name == "function_call"
-    assert events[2].tool_status == "done"
-    assert events[3].text_preview == "Codex summary"
+    assert events[3].tool_status == "done"
+    assert events[4].text_preview == "Codex summary"
 
 
 def test_parse_copilot_stream_events(copilot_jsonl_lines) -> None:

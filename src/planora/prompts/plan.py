@@ -341,8 +341,8 @@ When exploring the codebase, choose the right tool for the job:
 subsystem. The Agent tool parallelises reads and returns a synthesised summary.
 - **Direct file reads (targeted lookup)**: Use only when you need the exact \
 contents of 1-2 specific, already-identified files.
-- **Exa MCP tools (documentation lookup)**: Use `exa_search` or \
-`exa_websets_search` for external documentation, library APIs, and \
+- **Exa MCP tools (documentation lookup)**: Use `mcp__exa__web_search_exa` \
+or `mcp__exa__deep_search_exa` for external documentation, library APIs, and \
 specification lookups. Always verify claims against live docs — never rely \
 solely on your training data for library-specific details.
 

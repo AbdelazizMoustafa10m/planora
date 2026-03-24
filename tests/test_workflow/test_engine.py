@@ -117,8 +117,10 @@ class _StubRunner:
         on_event,
         on_snapshot,
         snapshot_interval,
+        stall_check_interval: float = 5.0,
         on_process_start,
         on_process_end,
+        hooks_manager=None,
     ) -> AgentResult:
         del prompt, output_path
         self.calls.append((agent.name, mode, dry_run))

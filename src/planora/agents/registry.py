@@ -36,6 +36,10 @@ class OutputExtraction(BaseModel):
         STDOUT_CAPTURE = "stdout"
 
     strategy: Strategy
+    # Declarative reference for the extraction logic applied by StreamParser.
+    # The stream parser extracts text natively (no jq binary required); this
+    # field documents the equivalent jq expression for human reference and
+    # future tooling that may invoke jq directly.
     jq_expression: str | None = None
     strip_preamble: bool = False
     stderr_as_stream: bool = False

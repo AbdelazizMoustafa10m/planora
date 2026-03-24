@@ -20,6 +20,8 @@ class StreamParser:
     def __init__(self, stream_format: StreamFormat) -> None:
         self._format = stream_format
         self._copilot_init_seen: bool = False
+        # Gemini fallback: count parsed lines to emit periodic init/progress pings
+        self._gemini_line_count: int = 0
         self._parsers: dict[StreamFormat, _ParseFn] = {
             StreamFormat.CLAUDE: self._parse_claude,
             StreamFormat.CODEX: self._parse_codex,
@@ -114,6 +116,9 @@ class StreamParser:
             return self._parse_claude_system(data)
         if event_type == "content_block_start":
             return self._parse_claude_content_block_start(data)
+        # Issue 4.1: content_block_delta with tool input streaming signals TOOL_EXEC progress
+        if event_type == "content_block_delta":
+            return self._parse_claude_content_block_delta(data)
         if event_type == "assistant":
             return self._parse_claude_assistant(data)
         if event_type == "result":
@@ -133,7 +138,7 @@ class StreamParser:
                 )
             ]
         if subtype == "api_retry":
-            return [
+            events: list[StreamEvent] = [
                 StreamEvent(
                     event_type=StreamEventType.RETRY,
                     retry_attempt=_int_or_none(data.get("attempt")),
@@ -142,24 +147,100 @@ class StreamParser:
                     raw=data,
                 )
             ]
+            # Issue 4.1: emit RATE_LIMIT when the retry is caused by a rate-limit error
+            error_code: str = str(data.get("error_code", "") or data.get("error", ""))
+            if "rate_limit" in error_code.lower() or "429" in error_code:
+                events.append(
+                    StreamEvent(
+                        event_type=StreamEventType.RATE_LIMIT,
+                        retry_delay_ms=_int_or_none(data.get("delay")),
+                        error_category=error_code or "rate_limit",
+                        raw=data,
+                    )
+                )
+            return events
+        # Issue 4.1: dedicated rate-limit subtype some Claude versions emit
+        if subtype == "rate_limit":
+            return [
+                StreamEvent(
+                    event_type=StreamEventType.RATE_LIMIT,
+                    retry_delay_ms=_int_or_none(data.get("retry_after_ms") or data.get("delay")),
+                    error_category="rate_limit",
+                    raw=data,
+                )
+            ]
         logger.debug("Claude system: unknown subtype %r", subtype)
+        return []
+
+    def _parse_claude_content_block_delta(self, data: dict[str, Any]) -> list[StreamEvent]:
+        """Issue 4.1: emit TOOL_EXEC progress during streaming tool-input deltas."""
+        delta = data.get("delta")
+        if not isinstance(delta, dict):
+            return []
+        delta_type: str = str(delta.get("type", ""))
+        # input_json_delta signals that a tool's input is being streamed — TOOL_EXEC progress
+        if delta_type == "input_json_delta":
+            return [
+                StreamEvent(
+                    event_type=StreamEventType.TOOL_EXEC,
+                    tool_status="running",
+                    raw=data,
+                )
+            ]
         return []
 
     def _parse_claude_content_block_start(self, data: dict[str, Any]) -> list[StreamEvent]:
         content_block = data.get("content_block")
         if not isinstance(content_block, dict):
             return []
-        if content_block.get("type") != "tool_use":
+        block_type: str = str(content_block.get("type", ""))
+        # Issue 4.1: emit STATE_CHANGE on thinking block start
+        if block_type == "thinking":
+            return [
+                StreamEvent(
+                    event_type=StreamEventType.STATE_CHANGE,
+                    text_preview="thinking",
+                    raw=data,
+                )
+            ]
+        if block_type == "text":
+            return [
+                StreamEvent(
+                    event_type=StreamEventType.STATE_CHANGE,
+                    text_preview="writing",
+                    raw=data,
+                )
+            ]
+        if block_type != "tool_use":
             return []
-        return [
+        tool_name = _str_or_none(content_block.get("name"))
+        # Issue 4.2: extract tool_detail from input when present in content_block_start
+        tool_input = content_block.get("input")
+        tool_input_dict: dict[str, Any] | None = (
+            tool_input if isinstance(tool_input, dict) else None
+        )
+        tool_detail = self._extract_tool_detail(tool_name, tool_input_dict)
+        events: list[StreamEvent] = [
             StreamEvent(
                 event_type=StreamEventType.TOOL_START,
-                tool_name=_str_or_none(content_block.get("name")),
+                tool_name=tool_name,
                 tool_id=_str_or_none(content_block.get("id")),
+                tool_detail=tool_detail,
                 tool_status="running",
                 raw=data,
             )
         ]
+        # Issue 4.1: emit SUBAGENT when an Agent tool is invoked
+        if tool_name and tool_name.lower() == "agent":
+            subagent_desc = str(tool_input_dict.get("description", "")) if tool_input_dict else ""
+            events.append(
+                StreamEvent(
+                    event_type=StreamEventType.SUBAGENT,
+                    text_preview=f'Subagent: {subagent_desc}' if subagent_desc else "Subagent",
+                    raw=data,
+                )
+            )
+        return events
 
     def _parse_claude_assistant(self, data: dict[str, Any]) -> list[StreamEvent]:
         message = data.get("message")
@@ -227,11 +308,32 @@ class StreamParser:
         if event_type == "item.started":
             item = data.get("item", {})
             item_dict: dict[str, Any] = item if isinstance(item, dict) else {}
-            return [
+            item_type_start: str = str(item_dict.get("type", ""))
+            events: list[StreamEvent] = [
                 StreamEvent(
                     event_type=StreamEventType.TOOL_START,
                     tool_id=_str_or_none(item_dict.get("id")),
-                    tool_name=_str_or_none(item_dict.get("type")),
+                    tool_name=_str_or_none(item_type_start) if item_type_start else None,
+                    tool_status="running",
+                    raw=data,
+                )
+            ]
+            # Issue 4.1: SUBAGENT when a nested agent item starts
+            if "agent" in item_type_start.lower():
+                events.append(
+                    StreamEvent(
+                        event_type=StreamEventType.SUBAGENT,
+                        text_preview=_str_or_none(item_dict.get("description") or item_type_start),
+                        raw=data,
+                    )
+                )
+            return events
+
+        # Issue 4.1: TOOL_EXEC on output item delta (tool execution in progress)
+        if event_type == "response.output_item.delta":
+            return [
+                StreamEvent(
+                    event_type=StreamEventType.TOOL_EXEC,
                     tool_status="running",
                     raw=data,
                 )
@@ -269,9 +371,38 @@ class StreamParser:
             ]
 
         if event_type == "turn.completed":
+            usage = data.get("usage")
+            token_usage: dict[str, int] | None = None
+            if isinstance(usage, dict):
+                token_usage = {
+                    k: int(v)
+                    for k, v in usage.items()
+                    if isinstance(v, (int, float))
+                } or None
             return [
                 StreamEvent(
                     event_type=StreamEventType.RESULT,
+                    token_usage=token_usage,
+                    raw=data,
+                )
+            ]
+
+        # Issue 4.1: rate-limit signalled via error event
+        if event_type == "error":
+            error_code: str = str(data.get("code", "") or data.get("error", ""))
+            if "rate_limit" in error_code.lower() or "429" in error_code:
+                return [
+                    StreamEvent(
+                        event_type=StreamEventType.RATE_LIMIT,
+                        retry_delay_ms=_int_or_none(data.get("retry_after_ms")),
+                        error_category=error_code or "rate_limit",
+                        raw=data,
+                    )
+                ]
+            return [
+                StreamEvent(
+                    event_type=StreamEventType.RETRY,
+                    error_category=error_code or "error",
                     raw=data,
                 )
             ]
@@ -405,6 +536,25 @@ class StreamParser:
 
     def _parse_gemini(self, data: dict[str, Any]) -> list[StreamEvent]:
         events: list[StreamEvent] = []
+        self._gemini_line_count += 1
+
+        # Issue 4.1: detect rate-limit errors
+        if "error" in data:
+            error_obj = data.get("error")
+            if isinstance(error_obj, dict):
+                error_code: int | str = error_obj.get("code", 0)
+                error_status: str = str(error_obj.get("status", ""))
+                if error_code == 429 or "RESOURCE_EXHAUSTED" in error_status:
+                    return [
+                        StreamEvent(
+                            event_type=StreamEventType.RATE_LIMIT,
+                            retry_delay_ms=_int_or_none(
+                                data.get("retry_after_ms") or error_obj.get("retry_after_ms")
+                            ),
+                            error_category="rate_limit",
+                            raw=data,
+                        )
+                    ]
 
         # Detect tool info: presence of "functionCall" or "tool_calls"
         tool_calls = data.get("functionCall") or data.get("tool_calls")
@@ -429,6 +579,41 @@ class StreamParser:
                             raw=data,
                         )
                     )
+                    # Issue 4.1: SUBAGENT when an agent-like tool is invoked
+                    if tool_name and "agent" in tool_name.lower():
+                        desc = str(tool_args_dict.get("description", "")) if tool_args_dict else ""
+                        events.append(
+                            StreamEvent(
+                                event_type=StreamEventType.SUBAGENT,
+                                text_preview=f'Subagent: {desc}' if desc else "Subagent",
+                                raw=data,
+                            )
+                        )
+            return events
+
+        # Issue 4.1: functionResponse signals tool execution completion → STATE_CHANGE
+        if "functionResponse" in data or "tool_response" in data:
+            response = data.get("functionResponse") or data.get("tool_response")
+            response_dict: dict[str, Any] | None = (
+                response if isinstance(response, dict) else None
+            )
+            tool_name_resp = _str_or_none(response_dict.get("name")) if response_dict else None
+            events.append(
+                StreamEvent(
+                    event_type=StreamEventType.TOOL_DONE,
+                    tool_name=tool_name_resp,
+                    tool_status="done",
+                    raw=data,
+                )
+            )
+            # Transition back to writing/thinking state after tool completes
+            events.append(
+                StreamEvent(
+                    event_type=StreamEventType.STATE_CHANGE,
+                    text_preview="writing",
+                    raw=data,
+                )
+            )
             return events
 
         # Final result blob: presence of "usageMetadata" or "candidates"
@@ -445,6 +630,18 @@ class StreamParser:
                             first_part = parts[0]
                             if isinstance(first_part, dict):
                                 text_val = str(first_part.get("text", ""))
+                    # Issue 4.1: emit STATE_CHANGE when the finish reason signals a transition
+                    finish_reason: str = (
+                        str(first.get("finishReason", "")) if isinstance(first, dict) else ""
+                    )
+                    if finish_reason == "STOP":
+                        events.append(
+                            StreamEvent(
+                                event_type=StreamEventType.STATE_CHANGE,
+                                text_preview="writing",
+                                raw=data,
+                            )
+                        )
             if text_val:
                 events.append(
                     StreamEvent(
@@ -457,7 +654,22 @@ class StreamParser:
                 events.append(StreamEvent(event_type=StreamEventType.RESULT, raw=data))
             return events
 
+        # Issue 4.3: fallback path — emit INIT on first unrecognised line, then periodic
+        # TOOL_EXEC pings so the UI receives visible progress instead of silence.
         logger.debug("Gemini: unrecognised object keys: %s", list(data.keys())[:10])
+        if self._gemini_line_count == 1:
+            # First line seen — treat as implicit session init
+            return [StreamEvent(event_type=StreamEventType.INIT, raw=data)]
+        # Every 10 unrecognised lines emit a TOOL_EXEC ping so the monitor sees activity
+        if self._gemini_line_count % 10 == 0:
+            return [
+                StreamEvent(
+                    event_type=StreamEventType.TOOL_EXEC,
+                    tool_status="running",
+                    text_preview=f"Gemini processing (line {self._gemini_line_count})",
+                    raw=data,
+                )
+            ]
         return []
 
 

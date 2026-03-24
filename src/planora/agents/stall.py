@@ -25,14 +25,16 @@ async def _next_or_sentinel(
 class StallDetector:
     """Wraps an event stream, injecting STALL events when the agent goes silent."""
 
-    DEEP_TOOL_PATTERNS: ClassVar[set[str]] = {
-        "deep_search_exa",
-        "deep_researcher_start",
-        "deep_researcher_check",
+    # Substrings matched case-insensitively against active tool names.
+    # MCP tool names like ``mcp__exa__deep_search_exa`` match ``deep_search``
+    # because the check is substring-based rather than exact equality.
+    DEEP_TOOL_PATTERNS: ClassVar[tuple[str, ...]] = (
+        "deep_search",
+        "deep_researcher",
+        "deep_research",
         "tavily_research",
         "tavily_crawl",
-        "deep_research_exa",
-    }
+    )
 
     def __init__(
         self,
@@ -46,8 +48,12 @@ class StallDetector:
         self._active_tools: set[str] = set()
 
     def _is_deep_tool_active(self) -> bool:
-        """Return True if any active tool matches DEEP_TOOL_PATTERNS."""
-        return bool(self._active_tools & self.DEEP_TOOL_PATTERNS)
+        """Return True if any active tool name contains a deep-tool pattern (case-insensitive)."""
+        return any(
+            pattern in tool_name.lower()
+            for tool_name in self._active_tools
+            for pattern in self.DEEP_TOOL_PATTERNS
+        )
 
     def _current_timeout(self) -> float:
         """Return the applicable stall timeout based on current active tools."""
