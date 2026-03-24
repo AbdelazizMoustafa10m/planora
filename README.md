@@ -6,13 +6,12 @@ Multi-agent implementation plan orchestrator. Planora coordinates multiple AI co
 
 Planora runs a multi-phase pipeline:
 
-```
-┌─────────┐     ┌───────────┐     ┌────────┐     ┌────────┐
-│  Plan    │ ──▸ │  Audit    │ ──▸ │ Refine │ ──▸ │ Report │
-│ (1 agent)│     │ (N agents)│     │(planner)│     │(archive)│
-└─────────┘     └───────────┘     └────────┘     └────────┘
-                     ▲                │
-                     └── round 2+ ────┘
+```mermaid
+flowchart LR
+    A["Plan\n(1 agent)"] --> B["Audit\n(N agents)"]
+    B --> C["Refine\n(planner)"]
+    C --> D["Report\n(archive)"]
+    C -- "round 2+" --> B
 ```
 
 1. **Plan** — A planner agent generates an initial implementation plan from your task description.
