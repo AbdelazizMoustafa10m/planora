@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from planora.core.events import (
@@ -41,8 +41,8 @@ class AgentMonitor:
     def __init__(self, agent_name: str, max_recent_tools: int = 20) -> None:
         self._agent_name = agent_name
         self._state = AgentState.STARTING
-        self._start_time = datetime.now()
-        self._last_activity = datetime.now()
+        self._start_time = datetime.now(UTC)
+        self._last_activity = datetime.now(UTC)
         self._active_tools: dict[str, ToolExecution] = {}
         self._recent_tools: deque[ToolExecution] = deque(maxlen=max_recent_tools)
         self._counters = ToolCounters()
@@ -71,7 +71,7 @@ class AgentMonitor:
             name=name,
             friendly_name=_friendly_name(name),
             detail=event.tool_detail,
-            started_at=datetime.now(),
+            started_at=datetime.now(UTC),
         )
         self._active_tools[tool_id] = execution
         self._counters.running += 1
@@ -89,7 +89,7 @@ class AgentMonitor:
             return
 
         execution = self._active_tools.pop(tool_id)
-        now = datetime.now()
+        now = datetime.now(UTC)
         execution.completed_at = now
         execution.duration = now - execution.started_at
 
@@ -156,11 +156,11 @@ class AgentMonitor:
             case StreamEventType.STALL:
                 self._handle_stall(event)
 
-        self._last_activity = datetime.now()
+        self._last_activity = datetime.now(UTC)
 
     def snapshot(self) -> AgentMonitorSnapshot:
         """Return a point-in-time snapshot. Computes elapsed and idle_seconds from now."""
-        now = datetime.now()
+        now = datetime.now(UTC)
         elapsed: timedelta = now - self._start_time
         idle_seconds: float = (now - self._last_activity).total_seconds()
 

@@ -3,9 +3,10 @@ from __future__ import annotations
 import importlib
 import logging
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    import types
     from collections.abc import Iterator
     from decimal import Decimal
 
@@ -20,7 +21,7 @@ class PlanoraTelemetry:
 
     def __init__(self, settings: PlanораSettings) -> None:
         self._enabled = settings.effective_telemetry_enabled
-        self._trace_api: Any | None = None
+        self._trace_api: types.ModuleType | None = None
         self._tracer: Any | None = None
 
         if not self._enabled:
@@ -114,19 +115,22 @@ class PlanoraTelemetry:
         ) as span:
             yield span
 
-    def tool_span(self, agent: str, tool: ToolExecution) -> Any | None:
+    def tool_span(self, agent: str, tool: ToolExecution) -> object | None:
         """Create a child span for a tool invocation."""
         if not self._enabled or self._tracer is None:
             return None
 
-        return self._tracer.start_span(
-            f"planora.tool.{tool.name}",
-            attributes={
-                "planora.agent": agent,
-                "planora.tool.name": tool.name,
-                "planora.tool.detail": tool.detail or "",
-                "planora.tool.id": tool.tool_id,
-            },
+        return cast(
+            "object",
+            self._tracer.start_span(
+                f"planora.tool.{tool.name}",
+                attributes={
+                    "planora.agent": agent,
+                    "planora.tool.name": tool.name,
+                    "planora.tool.detail": tool.detail or "",
+                    "planora.tool.id": tool.tool_id,
+                },
+            ),
         )
 
     def record_cost(self, agent: str, cost_usd: Decimal) -> None:
@@ -141,5 +145,7 @@ class PlanoraTelemetry:
             span.set_attribute("planora.agent", agent)
             span.set_attribute(f"planora.cost.{agent}", float(cost_usd))
             span.set_attribute("planora.cost.total", float(cost_usd))
-        except Exception:  # noqa: BLE001
-            logger.debug("Failed to record telemetry cost for agent %s", agent)
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            logger.debug(
+                "Failed to record telemetry cost for agent %s: %s", agent, exc, exc_info=True
+            )

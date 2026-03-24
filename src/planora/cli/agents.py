@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from planora.agents.registry import AgentRegistry, StreamFormat
 from planora.cli.app import agents_app
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 _STATUS_TIMEOUT_SECONDS = 10
 _COPILOT_TOKEN_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
@@ -110,7 +112,7 @@ def _check_codex_auth(binary: str) -> AuthStatus:
         return AuthStatus(False, reason)
 
     if not output:
-        return AuthStatus(False, "login status returned no output")
+        return AuthStatus(False, f"login status for {binary} returned no output")
 
     normalized = output.lower()
     if "api key" in normalized:
@@ -214,11 +216,8 @@ def _check_gemini_auth() -> AuthStatus:
     email = ""
     try:
         accounts = _read_json_file(accounts_path)
-    except FileNotFoundError:
-        accounts = None
-    except OSError:
-        accounts = None
-    except json.JSONDecodeError:
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
+        logger.debug("Failed to load accounts: %s", exc)
         accounts = None
 
     if isinstance(accounts, dict):
@@ -391,8 +390,8 @@ def agents_check(
                     console.print("  [yellow]?[/yellow] Version: no output")
             except subprocess.TimeoutExpired:
                 console.print("  [yellow]?[/yellow] Version: check timed out")
-            except OSError:
-                console.print("  [yellow]?[/yellow] Version: check failed")
+            except OSError as exc:
+                console.print(f"  [yellow]?[/yellow] Version: check failed ({exc})")
 
         # 3. Auth validation
         auth_status = _check_auth(name, config.binary, config.model)

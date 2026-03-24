@@ -160,7 +160,8 @@ def _current_template_config() -> _TemplateConfig:
         from planora.core.config import PlanораSettings
 
         settings = PlanораSettings()
-    except Exception:  # noqa: BLE001 - prompt fallback should remain best-effort
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to load settings for template config, using defaults: %s", exc)
         return _TemplateConfig()
 
     return _TemplateConfig(
@@ -203,7 +204,7 @@ def build_plan_prompt(
 
 
 def build_audit_prompt(
-    round: int,  # noqa: A002
+    audit_round: int,
     plan_content: str,
     task_content: str,
     claude_md: str,
@@ -224,7 +225,7 @@ def build_audit_prompt(
             resolved,
             {
                 **_base_template_context(),
-                "round": round,
+                "round": audit_round,
                 "plan_content": plan_content,
                 "task_content": task_content,
                 "claude_md": claude_md,
@@ -232,7 +233,7 @@ def build_audit_prompt(
             },
         )
     return _build_audit_prompt_builtin(
-        round,
+        audit_round,
         plan_content,
         task_content,
         claude_md,

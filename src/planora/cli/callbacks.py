@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -115,7 +115,7 @@ class CLICallback(UICallback):
         if snapshot.active_tools:
             tool = snapshot.active_tools[0]
             detail = f" {tool.detail}" if tool.detail else ""
-            tool_elapsed = datetime.now() - tool.started_at
+            tool_elapsed = datetime.now(UTC) - tool.started_at
             dur = f" ({int(tool_elapsed.total_seconds())}s)"
             active_str = f" | \u27f3 {tool.name}{detail}{dur}"
 
@@ -129,7 +129,7 @@ class CLICallback(UICallback):
 
     def on_log(self, level: str, message: str) -> None:
         """Print timestamped log line with level-specific styling."""
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now(UTC).strftime("%H:%M:%S")
         style_map: dict[str, str] = {
             "debug": "dim",
             "info": "blue",
@@ -159,7 +159,7 @@ class EventsOutputCallback(UICallback):
 
     @staticmethod
     def _ts() -> str:
-        return datetime.now().isoformat()
+        return datetime.now(UTC).isoformat()
 
     def on_phase_start(self, phase: str, label: str) -> None:
         self._emit({"ts": self._ts(), "event": "phase_start", "phase": phase, "label": label})

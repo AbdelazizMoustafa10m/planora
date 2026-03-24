@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path  # noqa: TC003
 from typing import Annotated
@@ -14,18 +15,14 @@ from planora.cli.app import plan_app
 from planora.core.config import PlanораSettings
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def parse_auditor_csv(csv_input: str) -> list[str]:
     """Split on comma, strip whitespace, remove empty, deduplicate preserving order."""
-    seen: set[str] = set()
-    result: list[str] = []
-    for name in csv_input.split(","):
-        name = name.strip()
-        if name and name not in seen:
-            seen.add(name)
-            result.append(name)
-    return result
+    return list(dict.fromkeys(
+        name.strip() for name in csv_input.split(",") if name.strip()
+    ))
 
 
 def _require_existing_initial_plan(root: Path) -> None:

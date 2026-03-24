@@ -370,7 +370,9 @@ def test_agents_list_json_format_outputs_valid_json() -> None:
     clean = result.output.strip()
     # Find the first '[' to locate JSON
     json_start = clean.find("[")
+
     agents = json.loads(clean[json_start:])
+
     assert isinstance(agents, list)
     assert len(agents) > 0
     assert all("name" in a for a in agents)
@@ -399,3 +401,4 @@ def test_agents_check_exits_1_for_unknown_agent() -> None:
 
     assert result.exit_code == 1
     assert "Unknown agent" in result.output
+

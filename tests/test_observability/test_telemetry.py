@@ -7,11 +7,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+import pytest
+
 from planora.core.events import ToolExecution
 from planora.observability.telemetry import PlanoraTelemetry
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Generator
 
 
 class _FakeSpan:
@@ -161,6 +163,24 @@ def _install_fake_opentelemetry(
     return trace_module
 
 
+@pytest.fixture
+def fake_otel_with_exporter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[_FakeTraceModule, None, None]:
+    """Install fake OpenTelemetry modules including the OTLP exporter, then clean up."""
+    trace_module = _install_fake_opentelemetry(monkeypatch, with_exporter=True)
+    yield trace_module
+
+
+@pytest.fixture
+def fake_otel_without_exporter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[_FakeTraceModule, None, None]:
+    """Install fake OpenTelemetry modules without the OTLP exporter, then clean up."""
+    trace_module = _install_fake_opentelemetry(monkeypatch, with_exporter=False)
+    yield trace_module
+
+
 def test_telemetry_disabled_is_a_no_op(settings) -> None:
     telemetry = PlanoraTelemetry(settings.model_copy(update={"telemetry_enabled": False}))
     tool = ToolExecution(
@@ -192,8 +212,10 @@ def test_telemetry_enabled_without_packages_disables_gracefully(monkeypatch, set
     assert telemetry._enabled is False
 
 
-def test_telemetry_builds_spans_when_fake_otel_is_available(monkeypatch, settings) -> None:
-    trace_module = _install_fake_opentelemetry(monkeypatch, with_exporter=True)
+def test_telemetry_builds_spans_when_fake_otel_is_available(
+    fake_otel_with_exporter: _FakeTraceModule, settings
+) -> None:
+    trace_module = fake_otel_with_exporter
     telemetry = PlanoraTelemetry(
         settings.model_copy(
             update={
@@ -233,9 +255,9 @@ def test_telemetry_builds_spans_when_fake_otel_is_available(monkeypatch, setting
     }
 
 
-def test_telemetry_warns_when_exporter_module_is_missing(monkeypatch, caplog, settings) -> None:
-    _install_fake_opentelemetry(monkeypatch, with_exporter=False)
-
+def test_telemetry_warns_when_exporter_module_is_missing(
+    fake_otel_without_exporter: _FakeTraceModule, caplog, settings
+) -> None:
     with caplog.at_level("WARNING"):
         telemetry = PlanoraTelemetry(
             settings.model_copy(
@@ -250,8 +272,10 @@ def test_telemetry_warns_when_exporter_module_is_missing(monkeypatch, caplog, se
     assert "Telemetry will run without exporting spans" in caplog.text
 
 
-def test_record_cost_swallows_span_errors(monkeypatch, caplog, settings) -> None:
-    trace_module = _install_fake_opentelemetry(monkeypatch, with_exporter=True)
+def test_record_cost_swallows_span_errors(
+    fake_otel_with_exporter: _FakeTraceModule, caplog, settings
+) -> None:
+    trace_module = fake_otel_with_exporter
     telemetry = PlanoraTelemetry(settings.model_copy(update={"telemetry_enabled": True}))
     trace_module.current_span = _BrokenSpan("broken")
 

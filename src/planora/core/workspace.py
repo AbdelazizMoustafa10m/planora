@@ -4,7 +4,7 @@ import asyncio
 import gzip
 import re
 import shutil
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path  # noqa: TCH003
 from types import TracebackType  # noqa: TCH003
 
@@ -26,7 +26,7 @@ class WorkspaceManager:
             reports_path if reports_path.is_absolute() else project_root / reports_path
         )
         self._task_slug: str = "untitled"
-        self._timestamp: str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self._timestamp: str = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
 
     @property
     def workspace_dir(self) -> Path:

@@ -17,6 +17,11 @@ from planora.tui.widgets.pipeline import PipelineProgress
 from planora.tui.widgets.status_panel import StatusPanel
 
 
+@pytest.fixture
+def _mock_launch_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(PlanoraTUI, "_launch_workflow", lambda self: None)
+
+
 def test_app_declares_expected_key_bindings() -> None:
     bindings = {(binding.key, binding.action) for binding in PlanoraTUI.BINDINGS}
 
@@ -31,8 +36,8 @@ def test_app_declares_expected_key_bindings() -> None:
 
 
 @pytest.mark.asyncio
-async def test_app_mounts_dashboard_widgets(monkeypatch) -> None:
-    monkeypatch.setattr(PlanoraTUI, "_launch_workflow", lambda self: None)
+@pytest.mark.usefixtures("_mock_launch_workflow")
+async def test_app_mounts_dashboard_widgets() -> None:
     app = PlanoraTUI(task_input="show dashboard")
 
     async with app.run_test():
@@ -63,8 +68,8 @@ async def test_on_mount_starts_worker_when_task_input_is_present(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_toggle_log_hides_and_restores_event_log(monkeypatch) -> None:
-    monkeypatch.setattr(PlanoraTUI, "_launch_workflow", lambda self: None)
+@pytest.mark.usefixtures("_mock_launch_workflow")
+async def test_toggle_log_hides_and_restores_event_log() -> None:
     app = PlanoraTUI(task_input="show dashboard")
 
     async with app.run_test() as pilot:

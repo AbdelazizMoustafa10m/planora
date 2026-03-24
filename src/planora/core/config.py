@@ -170,46 +170,93 @@ def _normalize_legacy_file_data(data: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+# Mapping from section name → list of (nested_key, flat_key) pairs.
+# Used by _sync_fields and _backfill_fields to eliminate repetitive if/assign blocks
+# in _sync_flat_patch_fields and model_post_init respectively.
+_DEFAULTS_FIELD_MAP: dict[str, list[tuple[str, str]]] = {
+    "defaults": [
+        ("planner", "default_planner"),
+        ("auditors", "default_auditors"),
+        ("concurrency", "default_concurrency"),
+        ("audit_rounds", "default_audit_rounds"),
+        ("project_root", "project_root"),
+        ("reports_dir", "reports_dir"),
+    ],
+    "observability": [
+        ("stall_timeout", "stall_timeout"),
+        ("deep_tool_timeout", "deep_tool_timeout"),
+        ("monitor_interval", "monitor_check_interval"),
+    ],
+    "telemetry": [
+        ("enabled", "telemetry_enabled"),
+        ("otlp_endpoint", "telemetry_otlp_endpoint"),
+        ("otlp_protocol", "telemetry_otlp_protocol"),
+        ("service_name", "telemetry_service_name"),
+        ("log_prompts", "telemetry_log_prompts"),
+    ],
+}
+
+# Default values for every flat field managed by _DEFAULTS_FIELD_MAP.
+# Used by _backfill_fields to decide whether to overwrite from the nested config.
+_FLAT_FIELD_DEFAULTS: dict[str, Any] = {
+    "default_planner": _DEFAULT_PLANNER,
+    "default_auditors": _DEFAULT_AUDITORS,
+    "default_concurrency": _DEFAULT_CONCURRENCY,
+    "default_audit_rounds": _DEFAULT_AUDIT_ROUNDS,
+    "project_root": _DEFAULT_PROJECT_ROOT,
+    "reports_dir": _DEFAULT_REPORTS_DIR,
+    "stall_timeout": _DEFAULT_STALL_TIMEOUT,
+    "deep_tool_timeout": _DEFAULT_DEEP_TOOL_TIMEOUT,
+    "monitor_check_interval": _DEFAULT_MONITOR_INTERVAL,
+    "telemetry_enabled": False,
+    "telemetry_otlp_endpoint": None,
+    "telemetry_otlp_protocol": _DEFAULT_TELEMETRY_PROTOCOL,
+    "telemetry_service_name": _DEFAULT_TELEMETRY_SERVICE_NAME,
+    "telemetry_log_prompts": False,
+}
+
+
+def _sync_fields(
+    synced: dict[str, Any], section_data: dict[str, Any], field_pairs: list[tuple[str, str]]
+) -> None:
+    """Copy present nested keys into flat legacy keys on *synced* in-place.
+
+    Used in :func:`_sync_flat_patch_fields` to mirror patch dicts.
+    """
+    for nested_key, flat_key in field_pairs:
+        if nested_key in section_data:
+            synced[flat_key] = section_data[nested_key]
+
+
+def _backfill_fields(
+    settings: Any,
+    section_obj: Any,
+    field_pairs: list[tuple[str, str]],
+) -> None:
+    """Backfill flat legacy attributes from a resolved nested config object.
+
+    Only overwrites a flat attribute when its current value equals the
+    registered default — preserving any value that was explicitly set via env
+    or CLI.  Used in :meth:`PlanораSettings.model_post_init`.
+    """
+    for nested_key, flat_key in field_pairs:
+        current = getattr(settings, flat_key)
+        default = _FLAT_FIELD_DEFAULTS.get(flat_key)
+        if current == default:
+            nested_val = getattr(section_obj, nested_key)
+            # auditors must be copied so mutation of one list won't affect the other
+            coerced = list(nested_val) if isinstance(nested_val, list) else nested_val
+            setattr(settings, flat_key, coerced)
+
+
 def _sync_flat_patch_fields(patch: dict[str, Any]) -> dict[str, Any]:
     """Mirror nested override patches into legacy flat compatibility keys."""
     synced = dict(patch)
 
-    defaults_patch = synced.get("defaults")
-    if isinstance(defaults_patch, dict):
-        if "planner" in defaults_patch:
-            synced["default_planner"] = defaults_patch["planner"]
-        if "auditors" in defaults_patch:
-            synced["default_auditors"] = defaults_patch["auditors"]
-        if "concurrency" in defaults_patch:
-            synced["default_concurrency"] = defaults_patch["concurrency"]
-        if "audit_rounds" in defaults_patch:
-            synced["default_audit_rounds"] = defaults_patch["audit_rounds"]
-        if "project_root" in defaults_patch:
-            synced["project_root"] = defaults_patch["project_root"]
-        if "reports_dir" in defaults_patch:
-            synced["reports_dir"] = defaults_patch["reports_dir"]
-
-    observability_patch = synced.get("observability")
-    if isinstance(observability_patch, dict):
-        if "stall_timeout" in observability_patch:
-            synced["stall_timeout"] = observability_patch["stall_timeout"]
-        if "deep_tool_timeout" in observability_patch:
-            synced["deep_tool_timeout"] = observability_patch["deep_tool_timeout"]
-        if "monitor_interval" in observability_patch:
-            synced["monitor_check_interval"] = observability_patch["monitor_interval"]
-
-    telemetry_patch = synced.get("telemetry")
-    if isinstance(telemetry_patch, dict):
-        if "enabled" in telemetry_patch:
-            synced["telemetry_enabled"] = telemetry_patch["enabled"]
-        if "otlp_endpoint" in telemetry_patch:
-            synced["telemetry_otlp_endpoint"] = telemetry_patch["otlp_endpoint"]
-        if "otlp_protocol" in telemetry_patch:
-            synced["telemetry_otlp_protocol"] = telemetry_patch["otlp_protocol"]
-        if "service_name" in telemetry_patch:
-            synced["telemetry_service_name"] = telemetry_patch["service_name"]
-        if "log_prompts" in telemetry_patch:
-            synced["telemetry_log_prompts"] = telemetry_patch["log_prompts"]
+    for section_name, field_pairs in _DEFAULTS_FIELD_MAP.items():
+        section_data = synced.get(section_name)
+        if isinstance(section_data, dict):
+            _sync_fields(synced, section_data, field_pairs)
 
     agents_patch = synced.get("agents")
     if isinstance(agents_patch, dict):
@@ -448,53 +495,20 @@ class PlanораSettings(BaseSettings):
 
     def model_post_init(self, __context: Any) -> None:
         """Backfill legacy flat attributes from the resolved nested config."""
-        if self.default_planner == _DEFAULT_PLANNER:
-            self.default_planner = self.defaults.planner
-        if self.default_auditors == _DEFAULT_AUDITORS:
-            self.default_auditors = list(self.defaults.auditors)
-        if self.default_concurrency == _DEFAULT_CONCURRENCY:
-            self.default_concurrency = self.defaults.concurrency
-        if self.default_audit_rounds == _DEFAULT_AUDIT_ROUNDS:
-            self.default_audit_rounds = self.defaults.audit_rounds
-        if self.project_root == _DEFAULT_PROJECT_ROOT:
-            self.project_root = self.defaults.project_root
-        if self.reports_dir == _DEFAULT_REPORTS_DIR:
-            self.reports_dir = self.defaults.reports_dir
+        _section_objects = {
+            "defaults": self.defaults,
+            "observability": self.observability,
+            "telemetry": self.telemetry,
+        }
+        for section_name, section_obj in _section_objects.items():
+            _backfill_fields(self, section_obj, _DEFAULTS_FIELD_MAP[section_name])
 
-        if self.claude_model == _DEFAULT_AGENT_MODELS["claude"]:
-            self.claude_model = (
-                self.agents.get("claude", AgentOverrideConfig()).model or self.claude_model
-            )
-        if self.copilot_model == _DEFAULT_AGENT_MODELS["copilot"]:
-            self.copilot_model = (
-                self.agents.get("copilot", AgentOverrideConfig()).model or self.copilot_model
-            )
-        if self.codex_model == _DEFAULT_AGENT_MODELS["codex"]:
-            self.codex_model = (
-                self.agents.get("codex", AgentOverrideConfig()).model or self.codex_model
-            )
-        if self.gemini_model == _DEFAULT_AGENT_MODELS["gemini"]:
-            self.gemini_model = (
-                self.agents.get("gemini", AgentOverrideConfig()).model or self.gemini_model
-            )
-
-        if self.stall_timeout == _DEFAULT_STALL_TIMEOUT:
-            self.stall_timeout = self.observability.stall_timeout
-        if self.deep_tool_timeout == _DEFAULT_DEEP_TOOL_TIMEOUT:
-            self.deep_tool_timeout = self.observability.deep_tool_timeout
-        if self.monitor_check_interval == _DEFAULT_MONITOR_INTERVAL:
-            self.monitor_check_interval = self.observability.monitor_interval
-
-        if self.telemetry_enabled is False:
-            self.telemetry_enabled = self.telemetry.enabled
-        if self.telemetry_otlp_endpoint is None:
-            self.telemetry_otlp_endpoint = self.telemetry.otlp_endpoint
-        if self.telemetry_otlp_protocol == _DEFAULT_TELEMETRY_PROTOCOL:
-            self.telemetry_otlp_protocol = self.telemetry.otlp_protocol
-        if self.telemetry_service_name == _DEFAULT_TELEMETRY_SERVICE_NAME:
-            self.telemetry_service_name = self.telemetry.service_name
-        if self.telemetry_log_prompts is False:
-            self.telemetry_log_prompts = self.telemetry.log_prompts
+        for agent_name in ("claude", "copilot", "codex", "gemini"):
+            flat_key = f"{agent_name}_model"
+            if getattr(self, flat_key) == _DEFAULT_AGENT_MODELS[agent_name]:
+                override_model = self.agents.get(agent_name, AgentOverrideConfig()).model
+                if override_model:
+                    setattr(self, flat_key, override_model)
 
     def with_profile(self, profile_name: str) -> PlanораSettings:
         """Return a new settings object with a named profile merged on top."""

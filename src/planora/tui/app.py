@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -103,8 +103,8 @@ class PlanoraTUI(App[None]):
         self._dashboard_screen: DashboardScreen | None = None
         self._workflow_worker: Worker[None] | None = None
 
-        self._shutting_down = False
-        self._exit_when_stopped = False
+        self._is_shutting_down = False
+        self._should_exit_when_stopped = False
         self._workflow_control: WorkflowControl | None = None
         self._workflow_phase_runner: object = None  # PhaseRunner, set when workflow starts
         self._is_paused = False
@@ -136,12 +136,12 @@ class PlanoraTUI(App[None]):
 
     async def action_quit(self) -> None:
         if self._workflow_is_active():
-            if self._shutting_down:
+            if self._is_shutting_down:
                 self._log_system("Force quit requested while cancellation is in progress.")
                 self.exit()
                 return
 
-            self._exit_when_stopped = True
+            self._should_exit_when_stopped = True
             self._request_workflow_cancel(
                 "Quit requested. Cancelling workflow before exit.",
             )
@@ -206,7 +206,7 @@ class PlanoraTUI(App[None]):
     def on_planora_phase_started(self, message: PhaseStarted) -> None:
         self._current_phase_key = message.phase
         self._phase_display_label = _phase_label(message.phase)
-        self._current_phase_started_at = datetime.now()
+        self._current_phase_started_at = datetime.now(UTC)
         self._pipeline_statuses[message.phase] = PhaseStatus.RUNNING
         self._sync_phase_widgets()
 
@@ -262,7 +262,7 @@ class PlanoraTUI(App[None]):
                 icon=icon,
                 detail=message.tool.detail,
                 duration=message.tool.duration,
-                timestamp=message.tool.completed_at or datetime.now(),
+                timestamp=message.tool.completed_at or datetime.now(UTC),
                 level=level,
             )
 
@@ -302,7 +302,7 @@ class PlanoraTUI(App[None]):
 
     async def on_workflow_completed(self, message: WorkflowCompleted) -> None:
         self._workflow_worker = None
-        self._shutting_down = False
+        self._is_shutting_down = False
         result = message.result
 
         self._pipeline_statuses.update({phase.name: phase.status for phase in result.phases})
@@ -325,7 +325,7 @@ class PlanoraTUI(App[None]):
             self.notify("Planning failed.", severity="error")
             self._log_system("Workflow completed with failures.", level="error")
 
-        if self._exit_when_stopped:
+        if self._should_exit_when_stopped:
             self.exit()
             return
 
@@ -430,7 +430,7 @@ class PlanoraTUI(App[None]):
             agents=self._agent_order(),
         )
 
-        self._workflow_started_at = datetime.now()
+        self._workflow_started_at = datetime.now(UTC)
         self._dashboard_screen.set_run_started(self._workflow_started_at)
         self._sync_phase_widgets()
         self._sync_tool_counts()
@@ -452,11 +452,11 @@ class PlanoraTUI(App[None]):
             self.notify("No workflow is running.", severity="information")
             return
 
-        if self._shutting_down:
+        if self._is_shutting_down:
             self.notify("Cancellation already in progress.", severity="warning")
             return
 
-        self._shutting_down = True
+        self._is_shutting_down = True
         self.notify("Cancelling workflow...", severity="warning")
         self._log_system(reason, level="warning")
 
@@ -465,7 +465,7 @@ class PlanoraTUI(App[None]):
 
     def _handle_workflow_cancelled(self) -> None:
         self._workflow_worker = None
-        self._shutting_down = False
+        self._is_shutting_down = False
 
         if self._current_phase_key is not None:
             self._pipeline_statuses[self._current_phase_key] = PhaseStatus.FAILED
@@ -480,12 +480,12 @@ class PlanoraTUI(App[None]):
         self.notify("Workflow cancelled.", severity="warning")
         self._log_system("Workflow cancelled.", level="warning")
 
-        if self._exit_when_stopped:
+        if self._should_exit_when_stopped:
             self.exit()
 
     def _handle_workflow_failure(self, error: BaseException) -> None:
         self._workflow_worker = None
-        self._shutting_down = False
+        self._is_shutting_down = False
 
         if self._current_phase_key is not None:
             self._pipeline_statuses[self._current_phase_key] = PhaseStatus.FAILED
@@ -500,7 +500,7 @@ class PlanoraTUI(App[None]):
         self.notify(f"Workflow failed: {error}", severity="error")
         self._log_system(f"Workflow failed: {error}", level="error")
 
-        if self._exit_when_stopped:
+        if self._should_exit_when_stopped:
             self.exit()
 
     def _sync_phase_widgets(self) -> None:
@@ -545,8 +545,8 @@ class PlanoraTUI(App[None]):
         return self._workflow_worker.state in {WorkerState.PENDING, WorkerState.RUNNING}
 
     def _reset_runtime_state(self) -> None:
-        self._shutting_down = False
-        self._exit_when_stopped = False
+        self._is_shutting_down = False
+        self._should_exit_when_stopped = False
         self._workflow_control = None
         self._workflow_phase_runner = None
         self._is_paused = False

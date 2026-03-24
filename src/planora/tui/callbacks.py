@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from textual.message import Message
@@ -127,7 +127,7 @@ class LogEvent(Message, bubble=False, namespace="planora"):
     ) -> None:
         self.level = level
         self.message = message
-        self.timestamp = timestamp or datetime.now()
+        self.timestamp = timestamp or datetime.now(UTC)
         self.agent = agent
         self.notify = notify
         super().__init__()
@@ -263,7 +263,7 @@ class TextualUICallback(UICallback):
     def on_tool_done(self, agent: str, tool: ToolExecution) -> None:
         event = StreamEvent(
             event_type=StreamEventType.TOOL_DONE,
-            timestamp=tool.completed_at or datetime.now(),
+            timestamp=tool.completed_at or datetime.now(UTC),
             tool_id=tool.tool_id,
             tool_name=tool.name,
             tool_detail=tool.detail,
@@ -388,7 +388,7 @@ class TextualUICallback(UICallback):
 
     def _record_snapshot(self, snapshot: AgentMonitorSnapshot) -> None:
         self._snapshots[snapshot.agent_name] = snapshot
-        self._snapshot_recorded_at[snapshot.agent_name] = datetime.now()
+        self._snapshot_recorded_at[snapshot.agent_name] = datetime.now(UTC)
         self._post(AgentSnapshotUpdated(snapshot, self._current_run_id(snapshot.agent_name)))
 
     def _update_monitor(self, agent: str, event: StreamEvent) -> AgentMonitorSnapshot:
@@ -401,7 +401,7 @@ class TextualUICallback(UICallback):
         snapshot = self._snapshots.get(agent)
         if recorded_at is None or snapshot is None:
             return 0.0
-        return snapshot.idle_seconds + (datetime.now() - recorded_at).total_seconds()
+        return snapshot.idle_seconds + (datetime.now(UTC) - recorded_at).total_seconds()
 
 
 def _tool_from_start_event(event: StreamEvent) -> ToolExecution:

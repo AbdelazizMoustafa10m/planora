@@ -287,7 +287,7 @@ class PlanWorkflow:
             )
 
         prompt = build_audit_prompt(
-            round=round,
+            audit_round=round,
             plan_content=await self._current_plan_content(),
             task_content=self._require_task_content(),
             claude_md=self._claude_md,

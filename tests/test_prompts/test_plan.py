@@ -263,7 +263,7 @@ def test_build_audit_prompt_falls_back_to_builtin_when_no_template() -> None:
     configure_prompt_templates(audit=None)
 
     prompt = build_audit_prompt(
-        round=1,
+        audit_round=1,
         plan_content="# Plan",
         task_content="Add tests",
         claude_md="",

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import stat
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class _AgentConfigLike(Protocol):
@@ -54,7 +57,8 @@ class ClaudeHooksManager:
         for path in self._created_paths:
             try:
                 path.unlink(missing_ok=True)
-            except OSError:
+            except OSError as exc:
+                logger.warning("Failed to unlink hook file %s: %s", path, exc)
                 continue
 
         with suppress(OSError):
