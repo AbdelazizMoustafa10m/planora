@@ -1,0 +1,44 @@
+# Project docs (architecture & orchestration — not tracked)
+docs/
+
+# Claude Code & Codex config
+.claude/
+.codex/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Planora workspace & reports
+.plan-workspace/
+reports/
+
+# Environment secrets
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
